@@ -157,6 +157,7 @@ static void state_thc_updown (void);
 static void state_updown_vad_lock (void);
 static void state_arc_monitor (void);
 static void state_await_puddle_clear (void);
+static void state_await_idle (void);
 
 plasma_control_t cutter = {};
 
@@ -164,6 +165,7 @@ static bool set_feed_override = false, updown_enabled = false, init_ok = false;
 static uint8_t port_arc_ok;
 static uint_fast8_t feed_override, segment_id = 0;
 static uint32_t v_count = 0;
+static int32_t thc_last_steps = 0;
 static float arc_vref = 0.0f, arc_voltage = 0.0f, arc_voltage_low, arc_voltage_high; //, vad_threshold;
 static volatile float fr_actual;
 static float fr_pgm, fr_thr_99, fr_thr_vad;
@@ -661,7 +663,8 @@ static status_code_t onGcodeComment (char *comment)
         char *p = comment + 4;
         if(!strncmp(p, "OFF", 3)) {
             job.thc_disabled = true;
-            thc.enabled = Off;
+            job.arc_ok_ignore = true;
+            thc.enabled = thc.active = Off;
             if(st2_motor_running(z_motor))
                 st2_motor_stop(z_motor);
             if(thc.arc_ok)
@@ -670,6 +673,7 @@ static status_code_t onGcodeComment (char *comment)
         }
         if(!strncmp(p, "ON", 2)) {
             job.thc_disabled = false;
+            job.arc_ok_ignore = false;
             p += 2;
             if(*p == ',') p++;
         }
@@ -798,6 +802,18 @@ static bool moveto (float z_position)
     return ok;
 }
 
+static inline void sync_z_steps (void)
+{
+    if(plasma.option.sync_pos) {
+        int32_t cur_steps = (int32_t)st2_get_position(z_motor);
+        int32_t delta = cur_steps - thc_last_steps;
+        if(delta != 0) {
+            sys.position[Z_AXIS] += delta;
+            thc_last_steps = cur_steps;
+        }
+    }
+}
+
 static void set_target_voltage (float v)
 {
     arc_vref = arc_voltage = v;
@@ -808,7 +824,10 @@ static void set_target_voltage (float v)
 
 static void pause_on_error (void)
 {
-    stateHandler = state_idle;
+    if(st2_motor_running(z_motor))
+        st2_motor_stop(z_motor);
+    thc.active = thc.enabled = Off;
+    stateHandler = state_await_idle;
     system_set_exec_state_flag(EXEC_FEED_HOLD);     // Set up program pause for manual tool change
 //    system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
     protocol_execute_realtime();                    // Execute...
@@ -860,11 +879,9 @@ static void state_await_puddle_clear (void)
     if(!st2_motor_running(z_motor)) {
         task_add_delayed(thc_start, NULL, (uint32_t)ceilf(1000.0f * plasma.thc_delay));
         if(plasma.option.sync_pos) {
-            int32_t step_count;
-            if((step_count = (int32_t)st2_get_position(z_motor))) {
-                sys.position[Z_AXIS] += step_count;
-                st2_set_position(z_motor, 0LL);
-            }
+            sync_z_steps();
+            st2_set_position(z_motor, 0LL);
+            thc_last_steps = 0;
         }
     }
 }
@@ -899,17 +916,15 @@ static void state_await_idle (void)
 
     else if(state_get() == STATE_IDLE) {
 
+        thc.active = thc.enabled = Off;
         stateHandler = state_idle;
         hal.stepper.claim_motor(Z_AXIS, false);
 
         if(plasma.option.sync_pos) {
-
-            int32_t step_count;
-            if((step_count = (int32_t)st2_get_position(z_motor))) {
-                sys.position[Z_AXIS] += step_count;
-                st2_set_position(z_motor, 0LL);
-                sync_position();
-            }
+            sync_z_steps();
+            st2_set_position(z_motor, 0LL);
+            thc_last_steps = 0;
+            sync_position();
         }
     }
 }
@@ -949,21 +964,10 @@ static void state_thc_updown (void)
         pause_on_error();
 }
 
-static inline void sync_z_realtime (void)
-{
-    if(plasma.option.sync_pos && !st2_motor_running(z_motor)) {
-        int32_t step_count = (int32_t)st2_get_position(z_motor);
-        if(step_count != 0) {
-            sys.position[Z_AXIS] += step_count;
-            st2_set_position(z_motor, 0LL);
-        }
-    }
-}
-
 static void state_pid_vad_lock (void)
 {
     arc_voltage = get_arc_voltage();
-    sync_z_realtime();
+    sync_z_steps();
 
     if(job.thc && !st2_motor_running(z_motor))
         job.thc = THC_None;
@@ -984,7 +988,7 @@ static void state_thc_pid (void)
         if(st2_motor_running(z_motor))
             st2_motor_stop(z_motor);
         else
-            sync_z_realtime();
+            sync_z_steps();
 
         return;
     }
@@ -1011,7 +1015,7 @@ static void state_thc_pid (void)
 
                 else if(!st2_motor_running(z_motor)) {
 
-                    sync_z_realtime();
+                    sync_z_steps();
 
                     float move = err * plasma.arc_height_per_volt;
 #ifdef DEBUGOUT
@@ -1025,7 +1029,7 @@ static void state_thc_pid (void)
 
             } else if(job.thc) {
                 if(!st2_motor_running(z_motor)) {
-                    sync_z_realtime();
+                    sync_z_steps();
                     stopped = false;
                     job.thc = THC_None;
                 }
@@ -1107,7 +1111,7 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
 
         spindle_set_state_(spindle, state, rpm);
 
-        thc.torch_on = thc.arc_ok = thc.enabled = Off;
+        thc.torch_on = thc.arc_ok = thc.enabled = thc.active = Off;
         stateHandler = state_await_idle;
         stateHandler();
 
@@ -1131,6 +1135,7 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
                 report_message("arc ok", Message_Plain);
                 delay_sec(job.pierce_delay, DelayMode_Dwell);
                 st2_set_position(z_motor, 0LL);
+                thc_last_steps = 0;
 
                 if(!isnanf(job.cut_height)) {
                     if(!isnanf(job.jump_height) && job.jump_height > 100.f) {
