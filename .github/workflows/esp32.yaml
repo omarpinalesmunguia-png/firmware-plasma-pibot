@@ -15,13 +15,7 @@ jobs:
       uses: docker://espressif/idf:release-v4.4
       with:
         entrypoint: /opt/esp/entrypoint.sh
-        args: >-
-          bash -c "
-          idf.py set-target esp32s3 &&
-          idf.py build &&
-          cd build &&
-          esptool.py --chip esp32s3 merge_bin -o grbl_pibot_plasma_merged_0x0.bin @flash_args
-          "
+        args: sh -c "idf.py set-target esp32s3 && idf.py build && cd build && esptool.py --chip esp32s3 merge_bin -o grbl_pibot_plasma_merged_0x0.bin @flash_args"
 
     - name: Upload Firmware Binary
       uses: actions/upload-artifact@v4
