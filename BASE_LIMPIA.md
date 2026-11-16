@@ -27,14 +27,15 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - `main/plasma` es un submodulo del repositorio oficial, no una copia suelta.
 - `3rdParty.cmake` agrega las fuentes oficiales del plugin usando el punto de
   extension previsto por el controlador ESP32.
-- El plugin permanece deshabilitado hasta definir `PLASMA_ENABLE` y comprobar
-  la asignacion de pines y entradas analogicas.
+- La rama de Etapa 2 habilita el plugin exclusivamente en modo Arc OK para
+  cortes a altura fija. La adaptacion impide que el plugin reclame o mueva Z.
+- La lectura analogica y la regulacion THC permanecen deshabilitadas.
 
 ## Configuracion minima agregada
 
-La rama incluye ahora una configuracion de Etapa 1 para tres ejes, sonda,
-controles fisicos, WiFi/Telnet y prueba seca de la salida M3/M5. El plugin y el
-MCP3221 siguen apagados. Consulta `CONFIGURACION_MINIMA.md`.
+La rama conserva la configuracion validada de Etapa 1 para tres ejes, sonda,
+controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK sin control Z.
+Consulta `CONFIGURACION_MINIMA.md` y `ETAPA2_ALTURA_FIJA.md`.
 
 La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
 componente oficial de red. Esta correccion usa el keepalive corto que ya habia
@@ -45,13 +46,12 @@ sin cerrar sockets directamente desde el evento WiFi.
 
 Crear una configuracion PiBot minima y auditable:
 
-1. Compilar para ESP32-S3 con `PIBOT_PLASMA_PLUGIN_ENABLE=0` y
-   `PIBOT_ARC_VOLTAGE_ENABLE=0`.
-2. Verificar `$I`, `$PINS` y la polaridad de cada entrada sin plasma encendido.
-3. Probar en seco movimientos, sondeo y M3/M5, sin encender el plasma.
-4. Adaptar la interrupcion ESP32-S3 y habilitar el plugin en modo Arc OK.
-5. Probar varios cortes a altura fija.
-6. Habilitar despues MCP3221 como monitor y, al final, la correccion Z.
+1. Compilar para ESP32-S3 con el plugin en modo fijo y MCP3221 apagado.
+2. Verificar `$I`, `$350`, `$367`, `$PINS` y la polaridad de Arc OK.
+3. Repetir en seco movimientos, sondeo y M3/M5.
+4. Probar varios cortes a altura fija y confirmar que Z no cambia sin orden.
+5. Habilitar despues MCP3221 solamente como monitor.
+6. Implementar y probar la correccion Z en una etapa independiente.
 
 ## Obtener exactamente esta base
 

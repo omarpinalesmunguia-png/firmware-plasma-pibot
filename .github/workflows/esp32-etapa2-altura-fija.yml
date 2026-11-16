@@ -1,0 +1,45 @@
+name: Build PiBot Etapa 2 Altura Fija
+
+on:
+  push:
+    branches:
+      - base-limpia-etapa2-altura-fija
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
+      - name: Desactivar inyeccion de pasos en altura fija
+        run: git -C main/grbl apply ../../patches/pibot-grbl-fixed-height.patch
+
+      - name: Adaptar plugin Plasma a Arc OK sin control Z
+        run: git -C main/plasma apply ../../patches/pibot-plasma-fixed-height.patch
+
+      - name: Compilar para ESP32-S3 con ESP-IDF 4.4
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py set-target esp32s3 && idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin
+            -o grbl_pibot_altura_fija_etapa2_merged_0x0.bin @flash_args"
+
+      - name: Publicar firmware de altura fija
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_altura_fija_etapa2
+          path: |
+            build/grbl_pibot_altura_fija_etapa2_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error

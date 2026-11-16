@@ -1,0 +1,212 @@
+diff --git a/thc.c b/thc.c
+index 77e5208..fa9eab4 100644
+--- a/thc.c
++++ b/thc.c
+@@ -63,6 +63,22 @@ typedef enum {
+     Plasma_ModeArcOK
+ } plasma_mode_t;
+ 
++#ifndef PLASMA_FIXED_HEIGHT_ONLY
++#define PLASMA_FIXED_HEIGHT_ONLY 0
++#endif
++
++#ifndef PLASMA_DEFAULT_MODE
++#define PLASMA_DEFAULT_MODE Plasma_ModeOff
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_OK_PORT
++#define PLASMA_DEFAULT_ARC_OK_PORT IOPORT_UNASSIGNED
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_RETRIES
++#define PLASMA_DEFAULT_ARC_RETRIES 3
++#endif
++
+ typedef enum {
+     THC_None = 0,
+     THC_Up,
+@@ -155,9 +171,9 @@ static pidf_t pid;
+ static nvs_address_t nvs_address;
+ static char thc_modes[] = "Off,Voltage,Up/down,Arc ok";
+ static plasma_settings_t plasma;
+ static st2_motor_t *z_motor;
+ static void (*volatile stateHandler)(void) = state_idle;
+-static plasma_mode_t mode = Plasma_ModeOff;
++static plasma_mode_t mode = (plasma_mode_t)PLASMA_DEFAULT_MODE;
+ static xbar_t arc_ok, cutter_down, cutter_up, parc_voltage;
+ static io_port_cfg_t a_in, d_in;
+ static uint32_t material_id = PLASMA_TMP_MATERIAL_ID_START;
+@@ -1105,8 +1121,12 @@ static void reset (void)
+     task_delete(puddle_jumped, NULL);
+     task_delete(thc_start, NULL);
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++    stateHandler = state_idle;
++#else
+     stateHandler = state_await_idle;
++#endif
+     stateHandler();
+ 
+     driver_reset();
+ }
+@@ -1149,7 +1169,11 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rp
+         spindle_set_state_(spindle, state, 0.0f);
+ 
+         thc.torch_on = thc.arc_ok = thc.enabled = Off;
++#if PLASMA_FIXED_HEIGHT_ONLY
++        stateHandler = state_idle;
++#else
+         stateHandler = state_await_idle;
++#endif
+         stateHandler();
+ 
+     } else {
+@@ -1158,8 +1187,10 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rp
+ 
+         uint_fast8_t retries = plasma.arc_retries;
+ 
++#if !PLASMA_FIXED_HEIGHT_ONLY
+         if(job.param.pierce_height != 0.0f)
+             ok = moveto(job.param.pierce_height);
++#endif
+ 
+         if(ok) do {
+ 
+@@ -1172,6 +1198,9 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rp
+                 job.pierce_count++;
+ 
+                 report_message("arc ok", Message_Plain);
++#if PLASMA_FIXED_HEIGHT_ONLY
++                stateHandler = state_arc_monitor;
++#else
+                 if((ok = delay_sec(job.param.pierce_delay, DelayMode_Dwell))) {
+                     st2_set_position(z_motor, 0LL);
+ 
+@@ -1190,6 +1224,7 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rp
+                         task_add_delayed(thc_start, NULL, (uint32_t)ceilf(1000.0f * plasma.thc_delay));
+                     }
+                 }
++#endif
+ 
+             } else if(!(--retries)) {
+                 thc.torch_on = Off;
+@@ -1331,10 +1366,12 @@ static void plasma_setup (settings_t *settings, settings_changed_flags_t changed)
+         on_program_completed = grbl.on_program_completed;
+         grbl.on_program_completed = onProgramCompleted;
+ 
++#if !PLASMA_FIXED_HEIGHT_ONLY
+         if(st2_motor_poll(z_motor)) {
+             on_execute_realtime = grbl.on_execute_realtime;
+             grbl.on_execute_realtime = onExecuteRealtime;
+         }
++#endif
+ 
+         task_add_systick(exec_state_machine, NULL);
+     }
+@@ -1343,10 +1380,12 @@ static void plasma_setup (settings_t *settings, settings_changed_flags_t changed)
+ 
+     // Reclaim entry points that may have been changed on settings change.
+ 
++#if !PLASMA_FIXED_HEIGHT_ONLY
+     if(hal.stepper.pulse_start != stepperPulseStart) {
+         stepper_pulse_start = hal.stepper.pulse_start;
+         hal.stepper.pulse_start = stepperPulseStart;
+     }
++#endif
+ }
+ 
+ PROGMEM static const setting_group_detail_t plasma_groups[] = {
+@@ -1507,8 +1546,9 @@ static void plasma_settings_restore (void)
+         .pause_at_end = 0.0f,
+         .pierce_delay = 0.0f,
+         .pierce_height = 1.0f,
++        .mode = (plasma_mode_t)PLASMA_DEFAULT_MODE,
+         .arc_fail_timeout = 3.0f,
+-        .arc_retries = 3,
++        .arc_retries = PLASMA_DEFAULT_ARC_RETRIES,
+         .arc_retry_delay = 3.0f,
+         .arc_fail_timeout = 3.0f,
+         .arc_voltage_scale = 1.0f,
+@@ -1522,20 +1562,21 @@ static void plasma_settings_restore (void)
+         .pid.p_gain = 1.0f,
+         .pid.i_gain = 0.0f,
+         .pid.d_gain = 0.0f,
+-        .port_arc_ok = IOPORT_UNASSIGNED,
++        .port_arc_ok = PLASMA_DEFAULT_ARC_OK_PORT,
+         .port_arc_voltage = IOPORT_UNASSIGNED,
+         .port_cutter_down = IOPORT_UNASSIGNED,
+         .port_cutter_up = IOPORT_UNASSIGNED
+     };
+ 
+     memcpy(&plasma, &default_settings, sizeof(plasma_settings_t));
+ 
+-    if((plasma.port_arc_ok = d_in.get_next(&d_in, IOPORT_UNASSIGNED, "Arc ok", (pin_cap_t){})) != IOPORT_UNASSIGNED && updown_enabled) {
++    if(plasma.port_arc_ok == IOPORT_UNASSIGNED &&
++       (plasma.port_arc_ok = d_in.get_next(&d_in, IOPORT_UNASSIGNED, "Arc ok", (pin_cap_t){})) != IOPORT_UNASSIGNED && updown_enabled) {
+         plasma.port_cutter_down = d_in.get_next(&d_in, plasma.port_arc_ok, "Cutter down", (pin_cap_t){});
+         plasma.port_cutter_up = d_in.get_next(&d_in, plasma.port_cutter_down, "Cutter up", (pin_cap_t){});
+     }
+ 
+-    if((plasma.mode = mode) == Plasma_ModeVoltage)
++    if((mode = plasma.mode) == Plasma_ModeVoltage)
+         plasma.port_arc_voltage = a_in.get_next(&a_in, IOPORT_UNASSIGNED, "Arc voltage", (pin_cap_t){});
+ 
+     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&plasma, sizeof(plasma_settings_t), true);
+@@ -1559,6 +1600,11 @@ static void plasma_settings_load (void)
+         plasma_settings_restore();
+     }
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++    plasma.mode = (plasma_mode_t)PLASMA_DEFAULT_MODE;
++    plasma.port_arc_ok = PLASMA_DEFAULT_ARC_OK_PORT;
++#endif
++
+     if((mode = plasma.mode) == Plasma_ModeOff)
+         return;
+ 
+@@ -1686,17 +1732,23 @@ void plasma_init (void)
+ 
+     bool ok;
+ 
+-    if((ok = !!hal.stepper.output_step && ioports_cfg(&d_in, Port_Digital, Port_Input)->n_ports)) {
++    if((ok = ioports_cfg(&d_in, Port_Digital, Port_Input)->n_ports > 0)) {
+         ioports_cfg(&a_in, Port_Analog, Port_Input);
++#if !PLASMA_FIXED_HEIGHT_ONLY
++        ok = !!hal.stepper.output_step;
+-        ok = (a_in.n_ports >= 1 && d_in.n_ports >= 1) || (d_in.n_ports >= 3);
++        ok = ok && ((a_in.n_ports >= 1 && d_in.n_ports >= 1) || (d_in.n_ports >= 3));
+-    }
+-
+-    if(ok) {
+-        updown_enabled = a_in.n_ports == 0;
++        updown_enabled = ok && a_in.n_ports == 0;
++#else
++        updown_enabled = false;
++#endif
+         ok = (nvs_address = nvs_alloc(sizeof(plasma_settings_t)));
+     }
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++    if(ok) {
++#else
+     if(ok && (z_motor = st2_motor_init(Z_AXIS, false)) != NULL) {
++#endif
+ 
+         settings_register(&setting_details);
+         system_register_commands(&thc_commands);
+@@ -1726,11 +1775,15 @@ void plasma_init (void)
+         hal.control_interrupt_callback = trap_control_interrupts;
+ */
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++        setting_remove_elements(Setting_THC_Mode, 0b0111, true);
++#else
+         if(a_in.n_ports == 0)
+             setting_remove_elements(Setting_THC_Mode, 0b1101, true);
+ 
+         if(d_in.n_ports < 3)
+             setting_remove_elements(Setting_THC_Mode, 0b1011, true);
++#endif
+ 
+         // Load materials
+         linuxcnc_init();

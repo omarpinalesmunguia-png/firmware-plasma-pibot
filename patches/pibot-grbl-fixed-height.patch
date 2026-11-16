@@ -1,0 +1,18 @@
+diff --git a/driver_opts.h b/driver_opts.h
+index 6abed62..bd35d90 100644
+--- a/driver_opts.h
++++ b/driver_opts.h
+@@ -242,11 +242,13 @@
+ #ifndef PLASMA_ENABLE
+ #define PLASMA_ENABLE       0
+ #elif PLASMA_ENABLE
++#if !defined(PLASMA_FIXED_HEIGHT_ONLY) || !PLASMA_FIXED_HEIGHT_ONLY
+ #if defined(STEP_INJECT_ENABLE)
+ #undef STEP_INJECT_ENABLE
+ #endif
+ #define STEP_INJECT_ENABLE  1
+ #endif
++#endif
+ #ifndef PPI_ENABLE
+ #define PPI_ENABLE          0
+ #endif

@@ -20,9 +20,10 @@
 // -----------------------------------------------------------------------------
 // PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
 //
-// Etapa 1: movimiento, sonda, controles, WiFi/Telnet y prueba seca M3/M5.
-// No realizar cortes reales mientras el monitor de plasma este apagado.
-#define PIBOT_PLASMA_PLUGIN_ENABLE  0
+// Etapa 2: corte a altura fija con supervision Arc OK.
+// El plugin no puede reclamar ni mover Z; la correccion THC sigue apagada.
+#define PIBOT_PLASMA_PLUGIN_ENABLE      1
+#define PIBOT_PLASMA_FIXED_HEIGHT_ONLY  1
 #define PIBOT_ARC_VOLTAGE_ENABLE    0
 
 #define BOARD_MY_MACHINE
@@ -52,6 +53,10 @@
 
 #if PIBOT_PLASMA_PLUGIN_ENABLE
 #define PLASMA_ENABLE           1
+#define PLASMA_FIXED_HEIGHT_ONLY PIBOT_PLASMA_FIXED_HEIGHT_ONLY
+#define PLASMA_DEFAULT_MODE      3 // Arc OK solamente
+#define PLASMA_DEFAULT_ARC_OK_PORT 7
+#define PLASMA_DEFAULT_ARC_RETRIES 1
 #else
 #define PLASMA_ENABLE           0
 #endif

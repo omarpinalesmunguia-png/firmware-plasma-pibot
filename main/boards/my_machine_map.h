@@ -13,7 +13,7 @@
 
 #define BOARD_NAME "PiBot V5.88 Ultra - Plasma base limpia"
 
-// SPI de la tarjeta. La SD permanece deshabilitada en la Etapa 1.
+// SPI de la tarjeta. La SD permanece deshabilitada en la Etapa 2.
 #define SPI_MISO_PIN            GPIO_NUM_2
 #define SPI_MOSI_PIN            GPIO_NUM_1
 #define SPI_SCK_PIN             GPIO_NUM_21
@@ -83,7 +83,7 @@
 #define PROBE_PIN               AUXINPUT0_PIN
 #endif
 
-// UART1 y UART2 quedan sin consumidores en la Etapa 1, pero se conservan sus
+// UART1 y UART2 quedan sin consumidores en la Etapa 2, pero se conservan sus
 // pines oficiales para evitar reasignaciones accidentales futuras.
 #define SERIAL1_PORT            1
 #define UART1_RX_PIN            GPIO_NUM_11
