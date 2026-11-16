@@ -22,40 +22,9 @@ index 2740372..f783c29 100644
  
  #ifndef LINK_CHECK_INTERVAL
 diff --git a/telnetd.c b/telnetd.c
-index 31e2c31..6357595 100644
 --- a/telnetd.c
 +++ b/telnetd.c
-@@ -406,21 +406,19 @@ FLASHMEM static err_t telnet_accept (void *arg, struct tcp_pcb *pcb, err_t err)
- 
-     sessiondata_t *session = arg;
- 
--    if(session->pcb)
--        return ERR_CONN; // Busy, refuse connection
--
-     if(telnet_server.link_lost) {
--        // Link was previously lost, abort current connection
--
--        tcp_abort(session->pcb);
--
--        telnet_state_free(session);
-+        // Clear a connection retained across a previous link loss before
-+        // deciding whether the server is busy. session->pcb may already be
-+        // NULL when the link-down handler closed it.
-+        if(session->pcb)
-+            telnet_close_conn(session, session->pcb);
- 
-         telnet_server.link_lost = false;
--
--        return ERR_ABRT;
-     }
- 
-+    if(session->pcb)
-+        return ERR_CONN; // Busy, refuse connection
-+
-     streamClose(session);
- 
-     memcpy(session, &defaultSettings, sizeof(sessiondata_t));
-@@ -435,7 +433,11 @@ FLASHMEM static err_t telnet_accept (void *arg, struct tcp_pcb *pcb, err_t err)
+@@ -435,6 +435,10 @@ FLASHMEM static err_t telnet_accept (void *arg, struct tcp_pcb *pcb, err_t err)
      tcp_sent(pcb, telnet_sent);
      tcp_arg(pcb, &streamSession);
  #if LWIP_TCP_KEEPALIVE
@@ -67,16 +36,3 @@ index 31e2c31..6357595 100644
 +    pcb->keep_cnt = NETWORK_KEEPALIVE_COUNT;
      ip_set_option(pcb, SOF_KEEPALIVE);
  #endif
- 
-@@ -544,7 +546,10 @@ FLASHMEM void telnetd_poll (void)
- 
- FLASHMEM void telnetd_close_connections (void)
- {
--    streamClose(&streamSession);
-+    if(streamSession.pcb)
-+        telnet_close_conn(&streamSession, streamSession.pcb);
-+    else
-+        streamClose(&streamSession);
- }
- 
- FLASHMEM void telnetd_stop (void)
