@@ -16,6 +16,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
       - name: Compilar para ESP32-S3 con ESP-IDF 4.4
         uses: docker://espressif/idf:release-v4.4
         with:

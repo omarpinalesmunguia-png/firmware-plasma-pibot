@@ -36,6 +36,11 @@ La rama incluye ahora una configuracion de Etapa 1 para tres ejes, sonda,
 controles fisicos, WiFi/Telnet y prueba seca de la salida M3/M5. El plugin y el
 MCP3221 siguen apagados. Consulta `CONFIGURACION_MINIMA.md`.
 
+La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
+componente oficial de red. Esta correccion cierra por completo la sesion Telnet
+cuando la laptop abandona el punto de acceso y conserva un keepalive corto como
+respaldo, evitando que sea necesario reiniciar la PiBot para volver a conectar.
+
 ## Siguiente etapa
 
 Crear una configuracion PiBot minima y auditable:
