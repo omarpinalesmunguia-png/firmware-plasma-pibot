@@ -1,3 +1,18 @@
+diff --git a/thc.h b/thc.h
+index 76cf290..7240f4e 100644
+--- a/thc.h
++++ b/thc.h
+@@ -27,6 +27,10 @@
+ 
+ #if PLASMA_ENABLE
+ 
++#ifndef sizeof_field
++#define sizeof_field(type, field) sizeof(((type *)0)->field)
++#endif
++
+ #define PLASMA_TMP_MATERIAL_ID_START 1000000
+ // parameter lookup entries
+ #define PLASMA_MATERIAL_NUMBER  12
 diff --git a/thc.c b/thc.c
 index 77e5208..fa9eab4 100644
 --- a/thc.c
@@ -116,12 +131,12 @@ index 77e5208..fa9eab4 100644
  }
  
  PROGMEM static const setting_group_detail_t plasma_groups[] = {
-@@ -1507,8 +1546,9 @@ static void plasma_settings_restore (void)
+@@ -1507,8 +1546,8 @@ static void plasma_settings_restore (void)
          .pause_at_end = 0.0f,
          .pierce_delay = 0.0f,
          .pierce_height = 1.0f,
+-        .arc_fail_timeout = 3.0f,
 +        .mode = (plasma_mode_t)PLASMA_DEFAULT_MODE,
-         .arc_fail_timeout = 3.0f,
 -        .arc_retries = 3,
 +        .arc_retries = PLASMA_DEFAULT_ARC_RETRIES,
          .arc_retry_delay = 3.0f,
