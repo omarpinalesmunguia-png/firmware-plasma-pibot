@@ -30,16 +30,23 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - El plugin permanece deshabilitado hasta definir `PLASMA_ENABLE` y comprobar
   la asignacion de pines y entradas analogicas.
 
+## Configuracion minima agregada
+
+La rama incluye ahora una configuracion de Etapa 1 para tres ejes, sonda,
+controles fisicos, WiFi/Telnet y prueba seca de la salida M3/M5. El plugin y el
+MCP3221 siguen apagados. Consulta `CONFIGURACION_MINIMA.md`.
+
 ## Siguiente etapa
 
 Crear una configuracion PiBot minima y auditable:
 
-1. Seleccionar ESP32-S3 y el mapa original de la PiBot 5.88 Ultra.
-2. Verificar fisicamente cada pin antes de agregar un mapa de plasma.
-3. Habilitar antorcha, Arc OK, sonda flotante, I2C y MCP3221.
-4. Compilar primero sin THC activo.
-5. Probar movimientos y corte a altura fija.
-6. Habilitar despues el control THC oficial sin comandos personalizados.
+1. Compilar para ESP32-S3 con `PIBOT_PLASMA_PLUGIN_ENABLE=0` y
+   `PIBOT_ARC_VOLTAGE_ENABLE=0`.
+2. Verificar `$I`, `$PINS` y la polaridad de cada entrada sin plasma encendido.
+3. Probar en seco movimientos, sondeo y M3/M5, sin encender el plasma.
+4. Adaptar la interrupcion ESP32-S3 y habilitar el plugin en modo Arc OK.
+5. Probar varios cortes a altura fija.
+6. Habilitar despues MCP3221 como monitor y, al final, la correccion Z.
 
 ## Obtener exactamente esta base
 

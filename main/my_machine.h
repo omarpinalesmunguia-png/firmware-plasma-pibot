@@ -17,6 +17,54 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
+// -----------------------------------------------------------------------------
+// PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
+//
+// Etapa 1: movimiento, sonda, controles, WiFi/Telnet y prueba seca M3/M5.
+// No realizar cortes reales mientras el monitor de plasma este apagado.
+#define PIBOT_PLASMA_PLUGIN_ENABLE  0
+#define PIBOT_ARC_VOLTAGE_ENABLE    0
+
+#define BOARD_MY_MACHINE
+#define SPINDLE0_ENABLE         SPINDLE_ONOFF0
+#define SPINDLE1_ENABLE         0
+#define SPINDLE2_ENABLE         0
+#define SPINDLE3_ENABLE         0
+#define COOLANT_ENABLE          0
+
+#define PROBE_ENABLE            1
+#define ESTOP_ENABLE            1
+
+#define WIFI_ENABLE             1
+#define WIFI_SOFTAP             1
+#define TELNET_ENABLE           1
+#define NETWORK_AP_SSID         "PiBot_Plasma"
+#define NETWORK_AP_PASSWORD     "plasma1234"
+#define NETWORK_AP_HOSTNAME     "pibot-plasma"
+#define NETWORK_STA_HOSTNAME    "pibot-plasma"
+
+#define SDCARD_ENABLE           0
+#define WEBUI_ENABLE            0
+#define FTP_ENABLE              0
+#define ETHERNET_ENABLE         0
+#define BLUETOOTH_ENABLE        0
+#define MODBUS_ENABLE           0
+
+#if PIBOT_PLASMA_PLUGIN_ENABLE
+#define PLASMA_ENABLE           1
+#else
+#define PLASMA_ENABLE           0
+#endif
+
+#if PIBOT_ARC_VOLTAGE_ENABLE
+#define MCP3221_ENABLE          1
+#define I2C_ENABLE              1
+#else
+#define MCP3221_ENABLE          0
+#define I2C_ENABLE              0
+#endif
+// -----------------------------------------------------------------------------
+
 // NOTE: Only one board may be enabled!
 // If none is enabled pin mappings from generic_map.h will be used
 //#define BOARD_BDRING_V3P5             			//
