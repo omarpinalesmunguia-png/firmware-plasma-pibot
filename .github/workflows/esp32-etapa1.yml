@@ -1,0 +1,36 @@
+name: Build PiBot Base Limpia Etapa 1
+
+on:
+  push:
+    branches:
+      - base-limpia-etapa1
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compilar para ESP32-S3 con ESP-IDF 4.4
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py set-target esp32s3 && idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin
+            -o grbl_pibot_base_limpia_etapa1_merged_0x0.bin @flash_args"
+
+      - name: Publicar primer bin de prueba seca
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_base_limpia_etapa1
+          path: |
+            build/grbl_pibot_base_limpia_etapa1_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error
