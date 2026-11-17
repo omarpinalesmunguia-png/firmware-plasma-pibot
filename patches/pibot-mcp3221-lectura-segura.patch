@@ -1,0 +1,26 @@
+diff --git a/mcp3221.c b/mcp3221.c
+index 6ce77d9..9215f51 100644
+--- a/mcp3221.c
++++ b/mcp3221.c
+@@ -54,16 +54,14 @@ static xbar_t mcp3221 = {
+ 
+ static float mcp3221_in_state (xbar_t *input)
+ {
+-    value = -1;
+-
+     if(input->id == mcp3221.id) {
+ 
+-        uint8_t result[2];
+-
+-        i2c_receive(MCP3221_ADDRESS, result, 2, true);
++        uint8_t result[2] = {0};
+ 
+-        value = (float)((result[0] << 8) | result[1]);
+-    }
++        if(i2c_receive(MCP3221_ADDRESS, result, 2, true))
++            value = (float)(((result[0] & 0x0F) << 8) | result[1]);
++    } else
++        return -1;
+ 
+     return value;
+ }

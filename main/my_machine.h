@@ -20,11 +20,12 @@
 // -----------------------------------------------------------------------------
 // PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
 //
-// Etapa 2: corte a altura fija con supervision Arc OK.
-// El plugin no puede reclamar ni mover Z; la correccion THC sigue apagada.
+// Etapa 3: altura fija con supervision Arc OK y telemetria de voltaje.
+// El MCP3221 solo mide: el plugin no puede reclamar ni mover Z.
 #define PIBOT_PLASMA_PLUGIN_ENABLE      1
 #define PIBOT_PLASMA_FIXED_HEIGHT_ONLY  1
-#define PIBOT_ARC_VOLTAGE_ENABLE    0
+#define PIBOT_ARC_VOLTAGE_ENABLE        1
+#define PIBOT_VOLTAGE_MONITOR_ONLY      1
 
 #define BOARD_MY_MACHINE
 #define SPINDLE0_ENABLE         SPINDLE_ONOFF0
@@ -57,6 +58,10 @@
 #define PLASMA_DEFAULT_MODE      3 // Arc OK solamente
 #define PLASMA_DEFAULT_ARC_OK_PORT 7
 #define PLASMA_DEFAULT_ARC_RETRIES 1
+#define PLASMA_VOLTAGE_MONITOR_ONLY PIBOT_VOLTAGE_MONITOR_ONLY
+#define PLASMA_DEFAULT_ARC_VOLTAGE_PORT 0
+#define PLASMA_DEFAULT_ARC_VOLTAGE_SCALE 0.04180f
+#define PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS 10
 #else
 #define PLASMA_ENABLE           0
 #endif

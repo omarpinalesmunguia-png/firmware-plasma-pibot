@@ -169,6 +169,38 @@ bool i2c_send (i2c_address_t i2c_address, uint8_t *data, size_t size, bool block
     return ret == ESP_OK;
 }
 
+bool i2c_receive (i2c_address_t i2c_address, uint8_t *data, size_t size, bool block)
+{
+    esp_err_t ret = ESP_FAIL;
+
+    // Always blocking, matching i2c_send(). The block argument is retained
+    // for compatibility with the shared grblHAL I2C API.
+    if(data && size && i2cBusy != NULL && xSemaphoreTake(i2cBusy, 5 / portTICK_PERIOD_MS) == pdTRUE) {
+
+        i2c_cmd_handle_t cmd;
+
+        if((cmd = i2c_cmd_link_create()) && i2c_master_start(cmd) == ESP_OK) {
+
+            bool ok = i2c_master_write_byte(cmd, (i2c_address << 1)|I2C_MASTER_READ, true) == ESP_OK;
+
+            if(size > 1)
+                ok = ok && i2c_master_read(cmd, data, size - 1, I2C_MASTER_ACK) == ESP_OK;
+
+            ok = ok && i2c_master_read_byte(cmd, data + size - 1, I2C_MASTER_NACK) == ESP_OK;
+            ok = ok && i2c_master_stop(cmd) == ESP_OK;
+
+            if(ok)
+                ret = i2c_master_cmd_begin(I2C_PORT, cmd, 1000 / portTICK_PERIOD_MS);
+
+            i2c_cmd_link_delete(cmd);
+        }
+
+        xSemaphoreGive(i2cBusy);
+    }
+
+    return ret == ESP_OK;
+}
+
 bool i2c_get_keycode (i2c_address_t i2cAddr, keycode_callback_ptr callback)
 {
     static i2c_task_t i2c_task = {

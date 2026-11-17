@@ -1,0 +1,48 @@
+name: Build PiBot Etapa 3 Telemetria THC
+
+on:
+  push:
+    branches:
+      - base-limpia-etapa3-telemetria-thc
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
+      - name: Mantener desactivada la inyeccion secundaria de pasos
+        run: git -C main/grbl apply ../../patches/pibot-grbl-fixed-height.patch
+
+      - name: Adaptar Plasma a Arc OK y monitor de voltaje sin control Z
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa3-telemetria.patch
+
+      - name: Corregir lectura segura del MCP3221
+        run: git -C main/plugins apply ../../patches/pibot-mcp3221-lectura-segura.patch
+
+      - name: Compilar para ESP32-S3 con ESP-IDF 4.4
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py set-target esp32s3 && idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin
+            -o grbl_pibot_telemetria_thc_etapa3_merged_0x0.bin @flash_args"
+
+      - name: Publicar firmware de telemetria THC
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_telemetria_thc_etapa3
+          path: |
+            build/grbl_pibot_telemetria_thc_etapa3_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error

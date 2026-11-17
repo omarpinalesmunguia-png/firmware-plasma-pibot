@@ -27,31 +27,33 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - `main/plasma` es un submodulo del repositorio oficial, no una copia suelta.
 - `3rdParty.cmake` agrega las fuentes oficiales del plugin usando el punto de
   extension previsto por el controlador ESP32.
-- La rama de Etapa 2 habilita el plugin exclusivamente en modo Arc OK para
-  cortes a altura fija. La adaptacion impide que el plugin reclame o mueva Z.
-- La lectura analogica y la regulacion THC permanecen deshabilitadas.
+- La rama de Etapa 3 conserva el modo Arc OK y la altura fija de la Etapa 2.
+- El MCP3221 esta activo solamente para telemetria; la adaptacion impide que
+  el plugin reclame o mueva Z.
+- La regulacion THC permanece deshabilitada.
 
 ## Configuracion minima agregada
 
 La rama conserva la configuracion validada de Etapa 1 para tres ejes, sonda,
-controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK sin control Z.
-Consulta `CONFIGURACION_MINIMA.md` y `ETAPA2_ALTURA_FIJA.md`.
+controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK y lectura de
+voltaje sin control Z. Consulta `CONFIGURACION_MINIMA.md`,
+`ETAPA2_ALTURA_FIJA.md` y `ETAPA3_TELEMETRIA_THC.md`.
 
 La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
 componente oficial de red. Esta correccion usa el keepalive corto que ya habia
 funcionado en el firmware anterior para liberar una sesion Telnet abandonada,
 sin cerrar sockets directamente desde el evento WiFi.
 
-## Siguiente etapa
+## Secuencia de validacion actual
 
 Crear una configuracion PiBot minima y auditable:
 
-1. Compilar para ESP32-S3 con el plugin en modo fijo y MCP3221 apagado.
-2. Verificar `$I`, `$350`, `$367`, `$PINS` y la polaridad de Arc OK.
+1. Compilar para ESP32-S3 con modo fijo y MCP3221 como monitor.
+2. Verificar `$I`, `$350`, `$361`, `$362`, `$366`, `$367` y `$PINS`.
 3. Repetir en seco movimientos, sondeo y M3/M5.
-4. Probar varios cortes a altura fija y confirmar que Z no cambia sin orden.
-5. Habilitar despues MCP3221 solamente como monitor.
-6. Implementar y probar la correccion Z en una etapa independiente.
+4. Probar cortes a altura fija, confirmar que Z no cambia y registrar voltaje.
+5. Calibrar escala y offset antes de interpretar el error de altura.
+6. Implementar la correccion Z en una etapa independiente.
 
 ## Obtener exactamente esta base
 
