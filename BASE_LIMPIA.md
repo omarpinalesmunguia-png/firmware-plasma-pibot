@@ -43,7 +43,8 @@ La rama conserva la configuracion validada de Etapa 1 para tres ejes, sonda,
 controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK y lectura de
 voltaje y control Z protegido. Consulta `CONFIGURACION_MINIMA.md`,
 `ETAPA2_ALTURA_FIJA.md`, `ETAPA3_TELEMETRIA_THC.md` y
-`ETAPA3_1_TELEMETRIA_ROBUSTA.md` y `ETAPA4_THC_PROTEGIDO.md`.
+`ETAPA3_1_TELEMETRIA_ROBUSTA.md`, `ETAPA4_THC_PROTEGIDO.md` y
+`ETAPA4C_SEGUIMIENTO_10MM.md`.
 
 La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
 componente oficial de red. Esta correccion usa el keepalive corto que ya habia

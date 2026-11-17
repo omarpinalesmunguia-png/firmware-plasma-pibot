@@ -20,8 +20,8 @@
 // -----------------------------------------------------------------------------
 // PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
 //
-// Etapa 4B: THC por voltaje autorizado para la primera linea de corte,
-// opt-in y con limites mecanicos estrictos.
+// Etapa 4C: seguimiento de placa inclinada con proteccion por cabezal flotante.
+// THC por voltaje opt-in y con limites mecanicos auditables.
 // Altura fija sigue sin mover Z. El control solo se habilita mediante el
 // protocolo PREPARE/READY de la aplicacion y se libera antes de lead-out/M5.
 #define PIBOT_PLASMA_PLUGIN_ENABLE      1
@@ -69,10 +69,10 @@
 #define PLASMA_VOLTAGE_MONITOR_MAX_FAILURES 3
 #define PLASMA_VOLTAGE_MONITOR_RETRY_TICKS 1000
 #define PLASMA_PROTECTED_THC_ENABLE PIBOT_PROTECTED_THC_ENABLE
-#define PLASMA_THC_Z_MIN_MM 0.80f
-#define PLASMA_THC_MAX_OFFSET_MM 0.50f
+#define PLASMA_THC_Z_MIN_MM -10.0f
+#define PLASMA_THC_MAX_OFFSET_MM 10.0f
 #define PLASMA_THC_MAX_STEP_MM 0.03f
-#define PLASMA_THC_MAX_FEED_MM_MIN 30.0f
+#define PLASMA_THC_MAX_FEED_MM_MIN 50.0f
 #define PLASMA_THC_OUTLIER_DELTA_V 15.0f
 #define PLASMA_THC_MAX_CONTROL_ERROR_V 20.0f
 #else

@@ -1,9 +1,9 @@
-name: Build PiBot Etapa 4B THC Completo
+name: Build PiBot Etapa 4C Seguimiento 10mm
 
 on:
   push:
     branches:
-      - base-limpia-etapa4b-thc-completo
+      - base-limpia-etapa4c-seguimiento-10mm
   workflow_dispatch:
 
 jobs:
@@ -22,6 +22,9 @@ jobs:
       - name: Aplicar THC protegido y telemetria robusta
         run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4-thc-protegido.patch
 
+      - name: Aplicar seguimiento ampliado y proteccion de colision
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4c-seguimiento-10mm.patch
+
       - name: Hacer explicitos los fallos de lectura del MCP3221
         run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
 
@@ -33,13 +36,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa4b_thc_completo_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa4c_seguimiento_10mm_merged_0x0.bin @flash_args"
 
-      - name: Publicar firmware THC completo protegido
+      - name: Publicar firmware THC con seguimiento ampliado
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa4b_thc_completo
+          name: pibot_etapa4c_seguimiento_10mm
           path: |
-            build/grbl_pibot_etapa4b_thc_completo_merged_0x0.bin
+            build/grbl_pibot_etapa4c_seguimiento_10mm_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error

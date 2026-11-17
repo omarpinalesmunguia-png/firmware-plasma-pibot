@@ -1,0 +1,92 @@
+diff --git a/thc.c b/thc.c
+index 90704e9..b0a0417 100644
+--- a/thc.c
++++ b/thc.c
+@@ -235,6 +235,8 @@ static uint_fast8_t control_sample_count = 0, control_sample_index = 0;
+ static spindle_ptrs_t *cutting_spindle = NULL;
+ static bool host_managed = false, waiting_for_cut_height = false;
+ static bool arc_lost = false, z_claimed = false, release_z_pending = false;
++static bool floating_head_collision = false;
++static uint_fast8_t floating_head_samples = 0;
+ static uint32_t arc_loss_since = 0, arc_grace_ms = 0;
+ static int32_t thc_last_steps = 0;
+ static float thc_start_z = 0.0f;
+@@ -1171,6 +1173,8 @@ static status_code_t thc_host_command (char *command)
+             return Status_SettingDisabled;
+ 
+         host_managed = waiting_for_cut_height = true;
++        floating_head_collision = false;
++        floating_head_samples = 0;
+         arc_grace_ms = (uint32_t)grace;
+         job.thc_disabled = false;
+         job.arc_ok_ignore = false;
+@@ -1397,6 +1401,33 @@ static void exec_state_machine (void *data)
+     sync_z_steps();
+     finish_z_release();
+ 
++    // El cabezal flotante tambien funciona como proteccion de colision durante
++    // el corte. Se filtran cinco muestras consecutivas para ignorar ruido EMI.
++    bool floating_head_triggered = cutting_spindle && thc.torch_on &&
++                                   hal.probe.get_state && hal.probe.get_state().triggered;
++
++    if(floating_head_triggered) {
++        if(floating_head_samples < 5)
++            floating_head_samples++;
++    } else
++        floating_head_samples = 0;
++
++    if(!floating_head_collision && floating_head_samples >= 5) {
++        floating_head_collision = true;
++        report_message("floating head collision; torch stopped", Message_Warning);
++        job.thc_disabled = true;
++        thc.enabled = thc.active = thc.void_lock = Off;
++        if(st2_motor_running(z_motor))
++            st2_motor_stop(z_motor);
++        if(spindle_set_state_ && cutting_spindle)
++            spindle_set_state_(cutting_spindle, (spindle_state_t){0}, 0.0f);
++        thc.torch_on = Off;
++        cutting_spindle = NULL;
++        release_z();
++        pause_on_error();
++        return;
++    }
++
+     thc.arc_ok = arc_ok.get_value(&arc_ok) == 1.0f;
+ 
+     update_arc_voltage_monitor(thc.arc_ok);
+@@ -1459,6 +1490,8 @@ static void reset (void)
+     task_delete(thc_start, NULL);
+     cutting_spindle = NULL;
+     host_managed = waiting_for_cut_height = arc_lost = false;
++    floating_head_collision = false;
++    floating_head_samples = 0;
+     arc_grace_ms = 0;
+     job.arc_ok_ignore = false;
+     release_z();
+@@ -1485,6 +1518,8 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+         task_delete(thc_start, NULL);
+         cutting_spindle = NULL;
+         host_managed = waiting_for_cut_height = arc_lost = false;
++        floating_head_collision = false;
++        floating_head_samples = 0;
+         arc_grace_ms = 0;
+         job.arc_ok_ignore = false;
+         job.thc_disabled = true;
+@@ -1889,7 +1924,7 @@ static void plasma_settings_restore (void)
+         .arc_height_per_volt = 0.1f,
+         .arc_ok_high_voltage = 150.0,
+         .arc_ok_low_voltage = 100.0f,
+-        .feed_factor = PLASMA_PROTECTED_THC_ENABLE ? 5 : 10,
++        .feed_factor = PLASMA_PROTECTED_THC_ENABLE ? 12 : 10,
+         .pid.p_gain = 1.0f,
+         .pid.i_gain = 0.0f,
+         .pid.d_gain = 0.0f,
+@@ -1955,7 +1990,7 @@ static void plasma_settings_load (void)
+     plasma.thc_delay = 1.5f;
+     plasma.thc_threshold = 3.0f;
+     plasma.vad_threshold = 90;
+-    plasma.feed_factor = 5;
++    plasma.feed_factor = 12;
+ #endif
+ 
+     if((mode = plasma.mode) == Plasma_ModeOff)
