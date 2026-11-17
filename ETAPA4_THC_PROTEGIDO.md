@@ -55,14 +55,22 @@ autoriza preparar la prueba 4B.
 
 ## Prueba 4B: primera linea con THC
 
+La validacion de movimiento en seco 4A se aprobo el 17 de noviembre de 2026:
+distancias, sentidos, tiempos, regreso de coordenadas, pausa/reanudacion,
+sondeos y movimiento simultaneo con telemetria WiFi resultaron consistentes.
+
+El firmware promovido para esta prueba se publica como
+`grbl_pibot_etapa4b_thc_completo_merged_0x0.bin`. Conserva exactamente la
+logica y los limites validados en seco; el cambio de etapa no modifica el
+control de motores.
+
 - Placa ya validada con aire estable.
 - Linea recta de 100 mm.
 - Altura inicial: 1.30 mm.
 - Avance: F400.
-- Objetivo inicial: 104 V.
-- Primero repetir una linea con el boton de altura fija.
-- Despues ejecutar una sola linea con el boton `Con THC activo`, unicamente
-  despues de aprobar la prueba 4A.
+- Objetivo inicial: 105 V (valor ya usado en las pruebas de esta maquina).
+- Ejecutar una sola linea con el boton `Con THC activo`. Las pruebas anteriores
+  de altura fija ya validaron aire, perforacion, altura y avance.
 
 Durante la prueba THC, Z debe permanecer entre 0.80 y 1.80 mm. Las letras `U`
 y `D` del campo THC indican correccion; `R` indica regulacion habilitada. Un

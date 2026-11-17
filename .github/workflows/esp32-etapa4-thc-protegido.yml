@@ -1,9 +1,9 @@
-name: Build PiBot Etapa 4 THC Protegido
+name: Build PiBot Etapa 4B THC Completo
 
 on:
   push:
     branches:
-      - base-limpia-etapa4-thc-protegido
+      - base-limpia-etapa4b-thc-completo
   workflow_dispatch:
 
 jobs:
@@ -33,13 +33,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa4_validacion_i2s_seca_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa4b_thc_completo_merged_0x0.bin @flash_args"
 
-      - name: Publicar firmware THC protegido
+      - name: Publicar firmware THC completo protegido
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa4_validacion_i2s_seca
+          name: pibot_etapa4b_thc_completo
           path: |
-            build/grbl_pibot_etapa4_validacion_i2s_seca_merged_0x0.bin
+            build/grbl_pibot_etapa4b_thc_completo_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error

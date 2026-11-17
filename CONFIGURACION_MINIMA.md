@@ -3,7 +3,7 @@
 La limpieza se realiza con opciones de compilacion. No se elimina codigo del
 nucleo grblHAL ni de los submodulos oficiales.
 
-## Activo en la Etapa 4
+## Activo en la Etapa 4B
 
 | Funcion | Estado | Motivo |
 |---|---:|---|
@@ -16,11 +16,11 @@ nucleo grblHAL ni de los submodulos oficiales.
 | Plugin Plasma | Voltaje protegido | Solo controla Z tras PREPARE/READY |
 | Corte a altura fija | Activo y aislado | Sin PREPARE el plugin no puede reclamar Z |
 | MCP3221 / lectura de voltaje | Monitor tolerante a fallos | Limita cada espera I2C a 20 ms y bloquea Z ante fallo |
-| Correccion automatica Z | Pendiente de prueba seca I2S | +/-0.50 mm, pasos de 0.03 mm y maximo 30 mm/min |
+| Correccion automatica Z | Autorizada para una linea de prueba | +/-0.50 mm, pasos de 0.03 mm y maximo 30 mm/min |
 
-La Etapa 4 primero autoriza solamente la validacion de movimiento I2S en seco.
-La linea THC se autoriza despues de comprobar distancia, tiempo, sentido y
-ausencia de deriva. Altura fija sigue siendo el modo de referencia.
+La validacion de movimiento I2S en seco de la Etapa 4A quedo aprobada el 17 de
+noviembre de 2026. La Etapa 4B autoriza una sola linea recta con THC activo;
+altura fija sigue siendo el modo de referencia.
 
 ## Limitado hasta las etapas siguientes
 
