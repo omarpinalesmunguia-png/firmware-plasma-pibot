@@ -1,0 +1,1002 @@
+diff --git a/thc.c b/thc.c
+index 19a5a1b..4ca03f0 100644
+--- a/thc.c
++++ b/thc.c
+@@ -50,6 +50,27 @@ extern void linuxcnc_init (void);
+ extern void sheetcam_init (void);
+ 
+ #define THC_SAMPLE_AVG                  5
++#ifndef PLASMA_PROTECTED_THC_ENABLE
++#define PLASMA_PROTECTED_THC_ENABLE     0
++#endif
++#ifndef PLASMA_THC_Z_MIN_MM
++#define PLASMA_THC_Z_MIN_MM             0.80f
++#endif
++#ifndef PLASMA_THC_MAX_OFFSET_MM
++#define PLASMA_THC_MAX_OFFSET_MM        0.50f
++#endif
++#ifndef PLASMA_THC_MAX_STEP_MM
++#define PLASMA_THC_MAX_STEP_MM          0.03f
++#endif
++#ifndef PLASMA_THC_MAX_FEED_MM_MIN
++#define PLASMA_THC_MAX_FEED_MM_MIN      30.0f
++#endif
++#ifndef PLASMA_THC_OUTLIER_DELTA_V
++#define PLASMA_THC_OUTLIER_DELTA_V      15.0f
++#endif
++#ifndef PLASMA_THC_MAX_CONTROL_ERROR_V
++#define PLASMA_THC_MAX_CONTROL_ERROR_V  20.0f
++#endif
+ // Digital ports
+ #define PLASMA_THC_DISABLE_PORT         2 // output
+ #define PLASMA_TORCH_DISABLE_PORT       3 // output
+@@ -63,6 +84,50 @@ typedef enum {
+     Plasma_ModeArcOK
+ } plasma_mode_t;
+ 
++#ifndef PLASMA_FIXED_HEIGHT_ONLY
++#define PLASMA_FIXED_HEIGHT_ONLY 0
++#endif
++
++#ifndef PLASMA_DEFAULT_MODE
++#define PLASMA_DEFAULT_MODE Plasma_ModeOff
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_OK_PORT
++#define PLASMA_DEFAULT_ARC_OK_PORT IOPORT_UNASSIGNED
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_RETRIES
++#define PLASMA_DEFAULT_ARC_RETRIES 3
++#endif
++
++#ifndef PLASMA_VOLTAGE_MONITOR_ONLY
++#define PLASMA_VOLTAGE_MONITOR_ONLY 0
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_VOLTAGE_PORT
++#define PLASMA_DEFAULT_ARC_VOLTAGE_PORT IOPORT_UNASSIGNED
++#endif
++
++#ifndef PLASMA_DEFAULT_ARC_VOLTAGE_SCALE
++#define PLASMA_DEFAULT_ARC_VOLTAGE_SCALE 1.0f
++#endif
++
++#ifndef PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS
++#define PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS 10
++#endif
++
++#ifndef PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE
++#define PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE 20.0f
++#endif
++
++#ifndef PLASMA_VOLTAGE_MONITOR_MAX_FAILURES
++#define PLASMA_VOLTAGE_MONITOR_MAX_FAILURES 3
++#endif
++
++#ifndef PLASMA_VOLTAGE_MONITOR_RETRY_TICKS
++#define PLASMA_VOLTAGE_MONITOR_RETRY_TICKS 1000
++#endif
++
+ typedef enum {
+     THC_None = 0,
+     THC_Up,
+@@ -138,13 +203,14 @@ static void state_thc_updown (void);
+ static void state_updown_vad_lock (void);
+ static void state_arc_monitor (void);
+ static void state_await_puddle_clear (void);
++static void thc_start (void *data);
++static status_code_t thc_host_command (char *command);
+ 
+ plasma_control_t cutter = {};
+ 
+ static bool set_feed_override = false, updown_enabled = false, init_ok = false;
+ static uint8_t port_arc_ok;
+ static uint_fast8_t feed_override, segment_id = 0;
+-static uint32_t v_count = 0;
+ static float arc_vref = 0.0f, arc_voltage = 0.0f, arc_voltage_low, arc_voltage_high; //, vad_threshold;
+ static volatile float fr_actual;
+ static float fr_pgm, fr_thr_99, fr_thr_vad;
+@@ -155,9 +221,22 @@ static char thc_modes[] = "Off,Voltage,Up/down,Arc ok";
+ static plasma_settings_t plasma;
+ static st2_motor_t *z_motor;
+ static void (*volatile stateHandler)(void) = state_idle;
+-static plasma_mode_t mode = Plasma_ModeOff;
++static plasma_mode_t mode = (plasma_mode_t)PLASMA_DEFAULT_MODE;
+ static xbar_t arc_ok, cutter_down, cutter_up, parc_voltage;
+ static io_port_cfg_t a_in, d_in;
++static bool voltage_monitor_available = false;
++static bool arc_voltage_valid = false;
++static uint_fast8_t voltage_monitor_failures = 0;
++static uint32_t voltage_monitor_retry_at = 0;
++static uint32_t arc_voltage_sample_id = 0, control_sample_id = 0;
++static float control_samples[THC_SAMPLE_AVG], control_voltage = 0.0f;
++static uint_fast8_t control_sample_count = 0, control_sample_index = 0;
++static spindle_ptrs_t *cutting_spindle = NULL;
++static bool host_managed = false, waiting_for_cut_height = false;
++static bool arc_lost = false, z_claimed = false, release_z_pending = false;
++static uint32_t arc_loss_since = 0, arc_grace_ms = 0;
++static int32_t thc_last_steps = 0;
++static float thc_start_z = 0.0f;
+ static uint32_t material_id = PLASMA_TMP_MATERIAL_ID_START;
+ static material_t *materials = NULL;
+ static struct {
+@@ -515,6 +594,11 @@ static void set_job_params (material_t *material)
+ 
+     job.id = material ? material->id : -1;
+     job.thc_disabled = (material && !material->param.thc_enabled) || plasma.mode == Plasma_ModeOff || plasma.mode == Plasma_ModeArcOK;
++#if PLASMA_PROTECTED_THC_ENABLE
++    // Protected mode is always opt-in per contour. A material selection alone
++    // must never be enough to move Z.
++    job.thc_disabled = true;
++#endif
+     job.no_arc_monitor = plasma.option.no_arc_monitor;
+ 
+     if(material) {
+@@ -711,7 +795,10 @@ static status_code_t onGcodeComment (char *comment)
+ {
+     status_code_t status = Status_OK;
+ 
+-    if(strlen(comment) > 5 && comment[0] == 'o' && comment[1] == '=') {
++    if(!strncmp(comment, "THC:", 4))
++        status = thc_host_command(comment + 4);
++
++    else if(strlen(comment) > 5 && comment[0] == 'o' && comment[1] == '=') {
+ 
+         char option = comment[2];
+         material_t material = { .id = option == '0' ? 0 : -1 };
+@@ -836,6 +923,105 @@ static inline float get_arc_voltage (void)
+     return (parc_voltage.get_value(&parc_voltage) - plasma.arc_voltage_offset) * plasma.arc_voltage_scale;
+ }
+ 
++static inline void update_arc_voltage_monitor (bool arc_active)
++{
++#if PLASMA_VOLTAGE_MONITOR_ONLY
++    static uint_fast8_t sample_ticks = 0;
++    uint32_t now = hal.get_elapsed_ticks();
++
++    if(!voltage_monitor_available || (int32_t)(now - voltage_monitor_retry_at) < 0)
++        return;
++
++    if(++sample_ticks >= PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS) {
++        sample_ticks = 0;
++
++        float raw = parc_voltage.get_value(&parc_voltage);
++        float measured = raw < 0.0f || isnanf(raw)
++            ? -1.0f
++            : (raw - plasma.arc_voltage_offset) * plasma.arc_voltage_scale;
++
++        if(measured < 0.0f || (arc_active && measured < PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE)) {
++            if(++voltage_monitor_failures >= PLASMA_VOLTAGE_MONITOR_MAX_FAILURES) {
++                voltage_monitor_failures = 0;
++                voltage_monitor_retry_at = now + PLASMA_VOLTAGE_MONITOR_RETRY_TICKS;
++                arc_voltage = -1.0f;
++                arc_voltage_valid = false;
++                arc_voltage_sample_id++;
++            }
++        } else {
++            voltage_monitor_failures = 0;
++            voltage_monitor_retry_at = 0;
++            arc_voltage = measured;
++            arc_voltage_valid = true;
++            arc_voltage_sample_id++;
++        }
++    }
++#endif
++}
++
++static void reset_control_filter (void)
++{
++    control_sample_count = control_sample_index = 0;
++    control_sample_id = arc_voltage_sample_id;
++    control_voltage = 0.0f;
++    thc.void_lock = Off;
++}
++
++static float median_control_voltage (void)
++{
++    float sorted[THC_SAMPLE_AVG];
++    memcpy(sorted, control_samples, sizeof(sorted));
++
++    for(uint_fast8_t i = 1; i < THC_SAMPLE_AVG; i++) {
++        float value = sorted[i];
++        uint_fast8_t j = i;
++        while(j && sorted[j - 1] > value) {
++            sorted[j] = sorted[j - 1];
++            j--;
++        }
++        sorted[j] = value;
++    }
++
++    return sorted[THC_SAMPLE_AVG / 2];
++}
++
++static bool get_filtered_control_voltage (float *filtered)
++{
++    if(control_sample_id == arc_voltage_sample_id)
++        return false;
++
++    control_sample_id = arc_voltage_sample_id;
++
++    if(!arc_voltage_valid || !isfinite(arc_voltage) ||
++       arc_voltage < PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE ||
++       fabsf(arc_voltage - arc_vref) > PLASMA_THC_MAX_CONTROL_ERROR_V) {
++        thc.void_lock = On;
++        return false;
++    }
++
++    if(control_sample_count == THC_SAMPLE_AVG) {
++        float median = median_control_voltage();
++        if(fabsf(arc_voltage - median) > PLASMA_THC_OUTLIER_DELTA_V) {
++            thc.void_lock = On;
++            return false;
++        }
++    }
++
++    control_samples[control_sample_index++] = arc_voltage;
++    if(control_sample_index == THC_SAMPLE_AVG)
++        control_sample_index = 0;
++    if(control_sample_count < THC_SAMPLE_AVG)
++        control_sample_count++;
++    if(control_sample_count < THC_SAMPLE_AVG)
++        return false;
++
++    control_voltage = median_control_voltage();
++    thc.void_lock = Off;
++    *filtered = control_voltage;
++
++    return true;
++}
++
+ static bool moveto (float z_position)
+ {
+     bool ok;
+@@ -854,31 +1040,196 @@ static bool moveto (float z_position)
+     return ok;
+ }
+ 
++static inline void sync_z_steps (void)
++{
++    if(z_claimed && plasma.option.sync_pos) {
++        int32_t current = (int32_t)st2_get_position(z_motor);
++        int32_t delta = current - thc_last_steps;
++        if(delta) {
++            sys.position[Z_AXIS] += delta;
++            thc_last_steps = current;
++        }
++    }
++}
++
++static inline float get_current_wpos_z (void)
++{
++    sync_z_steps();
++    int64_t steps = sys.position[Z_AXIS];
++    if(z_claimed && !plasma.option.sync_pos)
++        steps += st2_get_position(z_motor);
++    return (float)steps / settings.axis[Z_AXIS].steps_per_mm - gc_get_offset(Z_AXIS, false);
++}
++
++static void claim_z (void)
++{
++    if(!z_claimed) {
++        st2_set_position(z_motor, 0LL);
++        thc_last_steps = 0;
++        hal.stepper.claim_motor(Z_AXIS, true);
++        z_claimed = true;
++    }
++}
++
++static void finish_z_release (void)
++{
++    if(release_z_pending && !st2_motor_running(z_motor)) {
++        sync_z_steps();
++        hal.stepper.claim_motor(Z_AXIS, false);
++        z_claimed = release_z_pending = false;
++        job.thc = THC_None;
++    }
++}
++
++static void release_z (void)
++{
++    if(z_claimed && !release_z_pending) {
++        release_z_pending = true;
++        if(st2_motor_running(z_motor))
++            st2_motor_stop(z_motor);
++    }
++    finish_z_release();
++}
++
++static bool wait_for_z_release (void)
++{
++    while(release_z_pending && protocol_exec_rt_system())
++        finish_z_release();
++    return !release_z_pending && !sys.abort;
++}
++
++static void move_thc_z (float requested)
++{
++    float steps_per_mm = settings.axis[Z_AXIS].steps_per_mm;
++    float feed = min(min(fr_actual, settings.axis[Z_AXIS].max_rate) * job.feed_factor, PLASMA_THC_MAX_FEED_MM_MIN);
++    job.thc = THC_None;
++    thc.velocity_lock = Off;
++
++    if(!z_claimed || !isfinite(requested) || steps_per_mm <= 0.0f || feed <= 0.0f)
++        return;
++
++    float z = get_current_wpos_z();
++    float lower = max(PLASMA_THC_Z_MIN_MM, thc_start_z - PLASMA_THC_MAX_OFFSET_MM);
++    float upper = thc_start_z + PLASMA_THC_MAX_OFFSET_MM;
++    float available = requested < 0.0f ? z - lower : upper - z;
++    float steps = floorf(min(min(fabsf(requested), PLASMA_THC_MAX_STEP_MM), available) * steps_per_mm);
++
++    if(steps < 1.0f) {
++        thc.velocity_lock = On;
++        return;
++    }
++
++    float move = copysignf(steps / steps_per_mm, requested);
++    job.thc = requested < 0.0f ? THC_Down : THC_Up;
++    st2_motor_move(z_motor, move, feed, Stepper2_mm);
++}
++
+ static void set_target_voltage (float v)
+ {
+-    arc_vref = arc_voltage = v;
++    arc_vref = v;
+     arc_voltage_low  = arc_vref - plasma.thc_threshold;
+     arc_voltage_high = arc_vref + plasma.thc_threshold;
+-    v_count = 0;
++    reset_control_filter();
++}
++
++static void pause_on_error (void)
++{
++    if(cutting_spindle) {
++        spindle_set_state_(cutting_spindle, (spindle_state_t){0}, 0.0f);
++        cutting_spindle = NULL;
++    }
++    release_z();
++    thc.torch_on = thc.active = thc.enabled = thc.void_lock = Off;
++    stateHandler = state_await_idle;
++    system_set_exec_state_flag(EXEC_FEED_HOLD);
+ }
+ 
+-static bool pause_on_error (void)
++static status_code_t thc_host_command (char *command)
+ {
+-    stateHandler = state_idle;
+-    system_set_exec_state_flag(EXEC_FEED_HOLD);     // Set up program pause for manual tool change
+-//    system_set_exec_state_flag(EXEC_TOOL_CHANGE);   // Set up program pause for manual tool change
+-    return protocol_execute_realtime();             // Execute...
++    if(!strcmp(command, "INFO")) {
++        report_message("THC control 1", Message_Plain);
++        return Status_OK;
++    }
++
++    if(!strncmp(command, "PREPARE,", 8)) {
++        uint_fast8_t pos = 8;
++        float grace, voltage = 0.0f;
++        if(cutting_spindle || state_get() != STATE_IDLE || strncmp(command + pos, "G=", 2))
++            return Status_GcodeUnsupportedCommand;
++        pos += 2;
++        if(!read_float(command, &pos, &grace) || grace < 0.0f || grace > 4000.0f)
++            return Status_GcodeValueOutOfRange;
++        if(command[pos]) {
++            if(strncmp(command + pos, ",V=", 3))
++                return Status_GcodeValueOutOfRange;
++            pos += 3;
++            if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f || command[pos])
++                return Status_GcodeValueOutOfRange;
++        }
++        if(voltage == 0.0f || !plasma.option.sync_pos || mode != Plasma_ModeVoltage)
++            return Status_SettingDisabled;
++
++        host_managed = waiting_for_cut_height = true;
++        arc_grace_ms = (uint32_t)grace;
++        job.thc_disabled = false;
++        job.arc_ok_ignore = false;
++        job.param.cut_voltage = voltage;
++        set_target_voltage(voltage);
++        return Status_OK;
++    }
++
++    if(!strcmp(command, "READY")) {
++        if(!host_managed || !waiting_for_cut_height || !cutting_spindle || state_get() != STATE_IDLE || release_z_pending)
++            return Status_GcodeUnsupportedCommand;
++        if(!protocol_buffer_synchronize() || !cutting_spindle || state_get() != STATE_IDLE)
++            return Status_GcodeUnsupportedCommand;
++        waiting_for_cut_height = false;
++        if(!task_add_delayed(thc_start, NULL, (uint32_t)ceilf(1000.0f * plasma.thc_delay)))
++            return Status_GcodeUnsupportedCommand;
++        return Status_OK;
++    }
++
++    if(!strcmp(command, "OFF") || !strcmp(command, "LEADOUT")) {
++        bool leadout = !strcmp(command, "LEADOUT");
++        if(leadout && (!host_managed || !cutting_spindle || state_get() != STATE_IDLE))
++            return Status_GcodeUnsupportedCommand;
++        task_delete(thc_start, NULL);
++        waiting_for_cut_height = false;
++        job.thc_disabled = true;
++        thc.enabled = thc.active = thc.void_lock = Off;
++        release_z();
++        stateHandler = cutting_spindle ? state_arc_monitor : state_await_idle;
++        if(!wait_for_z_release())
++            return Status_GcodeUnsupportedCommand;
++        if(state_get() == STATE_IDLE && plasma.option.sync_pos)
++            sync_position();
++        return Status_OK;
++    }
++
++    uint_fast8_t pos = 2;
++    float voltage;
++    if(strncmp(command, "V=", 2) || !read_float(command, &pos, &voltage) || command[pos] || voltage < 40.0f || voltage > 250.0f)
++        return Status_GcodeValueOutOfRange;
++    job.param.cut_voltage = voltage;
++    set_target_voltage(voltage);
++    return Status_OK;
+ }
+ 
+ static void thc_start (void *data)
+ {
+-    if(!(thc.enabled = !(job.thc_disabled || mode == Plasma_ModeArcOK)))
++    if(!cutting_spindle || waiting_for_cut_height || release_z_pending)
++        return;
++
++    if(!(thc.enabled = !(job.thc_disabled || mode != Plasma_ModeVoltage)))
+         stateHandler = job.no_arc_monitor ? state_wait : state_arc_monitor;
+ 
+     else {
+ 
+         job.thc = THC_None;
+         job.feed_factor = (float)plasma.feed_factor / 100.0f;
++        claim_z();
++        thc_start_z = get_current_wpos_z();
++        reset_control_filter();
+ 
+         if(updown_enabled)
+             stateHandler = state_updown_vad_lock;
+@@ -886,11 +1237,16 @@ static void thc_start (void *data)
+             pidf_reset(&pid);
+             if(!isnanf(job.param.cut_voltage))
+                 set_target_voltage(job.param.cut_voltage);
+-            else
+-                set_target_voltage(get_arc_voltage());
++            else if(arc_voltage_valid)
++                set_target_voltage(arc_voltage);
++            else {
++                job.thc_disabled = true;
++                thc.enabled = Off;
++                stateHandler = state_arc_monitor;
++                return;
++            }
+             stateHandler = state_pid_vad_lock;
+         }
+-        stateHandler();
+     }
+ }
+ 
+@@ -925,11 +1281,6 @@ static void state_await_puddle_clear (void)
+ 
+ static void state_idle (void)
+ {
+-    if(mode == Plasma_ModeVoltage)
+-        arc_voltage = get_arc_voltage();
+-
+-    thc.arc_ok = arc_ok.get_value(&arc_ok) == 1.0f;
+-
+     if(updown_enabled) {
+         thc.up = thc.report_up = cutter_up.get_value(&cutter_up) == 1.0f;
+         thc.down = thc.report_down = cutter_down.get_value(&cutter_down) == 1.0f;
+@@ -948,32 +1299,19 @@ static void state_await_idle (void)
+ {
+     state_idle();
+ 
+-    if(st2_motor_running(z_motor))
+-        st2_motor_stop(z_motor);
+-
+-    else if(state_get() == STATE_IDLE) {
+-
++    finish_z_release();
++    if(!release_z_pending && state_get() == STATE_IDLE) {
++        thc.active = thc.enabled = Off;
+         stateHandler = state_idle;
+-        hal.stepper.claim_motor(Z_AXIS, false);
+-
+-        if(plasma.option.sync_pos) {
+-
+-            int32_t step_count;
+-            if((step_count = (int32_t)st2_get_position(z_motor))) {
+-                sys.position[Z_AXIS] += step_count;
+-                st2_set_position(z_motor, 0LL);
+-                sync_position();
+-            }
+-        }
++        if(plasma.option.sync_pos)
++            sync_position();
+     }
+ }
+ 
+ static void state_arc_monitor (void)
+ {
+-    if(!((thc.arc_ok = arc_ok.get_value(&arc_ok) == 1.0f) || job.arc_ok_ignore)) {
+-        spindle_set_state_(job.spindle, (spindle_state_t){0}, 0.0f); // ??
+-        pause_on_error();
+-    }
++    // ArcOK supervision is centralized in exec_state_machine() so the
++    // configured crossing grace period also applies while THC is locked.
+ }
+ 
+ static void state_updown_vad_lock (void)
+@@ -1007,87 +1345,86 @@ static void state_thc_updown (void)
+ 
+ static void state_pid_vad_lock (void)
+ {
+-    arc_voltage = get_arc_voltage();
++    sync_z_steps();
+ 
+     if(job.thc && !st2_motor_running(z_motor))
+         job.thc = THC_None;
+ 
+-    if((thc.active = fr_actual >= fr_thr_99))
++    if((thc.active = fr_actual >= fr_thr_99)) {
++        reset_control_filter();
+         stateHandler = state_thc_pid;
++    }
+ }
+ 
+ static void state_thc_pid (void)
+ {
+-    static float v;
+-    static bool stopped = false;
+-
+     if(!(thc.active = fr_actual >= fr_thr_vad)) {
+-
+         stateHandler = state_pid_vad_lock;
+-
+         if(st2_motor_running(z_motor))
+             st2_motor_stop(z_motor);
+-
++        reset_control_filter();
+         return;
+     }
+ 
+-    if((thc.arc_ok = arc_ok.get_value(&arc_ok)) == 1.0f || job.arc_ok_ignore) {
+-
+-        if(v_count == 0)
+-            v = 0.0f;
+-
+-        arc_voltage = get_arc_voltage();
+-        v += arc_voltage;
+-        if(++v_count == THC_SAMPLE_AVG) {
+-
+-            arc_voltage = v / (float)THC_SAMPLE_AVG;
+-            v_count = 0;
+-
+-            if(arc_voltage < arc_voltage_low || arc_voltage > arc_voltage_high) {
+-
+-                float err = pidf(&pid, arc_vref, arc_voltage, 5.0f);
+-                plasma_thc_t thc = err > 0.0f ? THC_Up : THC_Down;
+-
+-                if(job.thc && thc != job.thc && st2_motor_running(z_motor) && !stopped)
+-                    stopped = st2_motor_stop(z_motor);
+-
+-                else if(!st2_motor_running(z_motor)) {
++    float filtered;
++    if(!get_filtered_control_voltage(&filtered)) {
++        if((!arc_voltage_valid || thc.void_lock) && st2_motor_running(z_motor))
++            st2_motor_stop(z_motor);
++        return;
++    }
+ 
+-                    float move = err * plasma.arc_height_per_volt;
+-#ifdef DEBUGOUT
+-                    debug_printf("%.1f %.1f %.1f %.4f", arc_vref, arc_voltage, err, move);
+-#endif
+-                    stopped = false;
+-                    job.thc = thc;
+-                    st2_motor_move(z_motor, move, min(fr_actual, settings.axis[Z_AXIS].max_rate) * job.feed_factor, Stepper2_mm);
+-                }
++    if(filtered >= arc_voltage_low && filtered <= arc_voltage_high) {
++        if(!st2_motor_running(z_motor))
++            job.thc = THC_None;
++        return;
++    }
+ 
++    float requested = filtered < arc_voltage_low ? PLASMA_THC_MAX_STEP_MM : -PLASMA_THC_MAX_STEP_MM;
++    plasma_thc_t direction = requested > 0.0f ? THC_Up : THC_Down;
+ 
+-            } else if(job.thc) {
+-                if(!st2_motor_running(z_motor)) {
+-                    stopped = false;
+-                    job.thc = THC_None;
+-                }
+-              //  else
+-              //      st2_motor_stop(z_motor);
+-            }
+-        }
+-/*
+-        if(arc_voltage >= arc_voltage_high)
+-            hal.stepper.output_step((axes_signals_t){Z_AXIS_BIT}, (axes_signals_t){Z_AXIS_BIT});
+-        else if(arc_voltage <= arc_voltage_low)
+-            hal.stepper.output_step((axes_signals_t){Z_AXIS_BIT}, (axes_signals_t){0});
+-*/
+-
++    if(st2_motor_running(z_motor)) {
++        if(direction != job.thc)
++            st2_motor_stop(z_motor);
+     } else
+-        pause_on_error();
++        move_thc_z(requested);
+ }
+ 
+ /* end THC state machine */
+ 
+ static void exec_state_machine (void *data)
+ {
+-    stateHandler();
++    sync_z_steps();
++    finish_z_release();
++
++    thc.arc_ok = arc_ok.get_value(&arc_ok) == 1.0f;
++
++    update_arc_voltage_monitor(thc.arc_ok);
++
++    if(cutting_spindle && !thc.arc_ok && !job.arc_ok_ignore) {
++        uint32_t now = hal.get_elapsed_ticks();
++        if(!arc_lost) {
++            arc_lost = true;
++            arc_loss_since = now;
++            thc.active = thc.void_lock = Off;
++            reset_control_filter();
++            if(st2_motor_running(z_motor))
++                st2_motor_stop(z_motor);
++        }
++        if((uint32_t)(now - arc_loss_since) >= arc_grace_ms) {
++            report_message("arc lost", Message_Warning);
++            pause_on_error();
++        }
++    } else {
++        arc_lost = false;
++        if(thc.enabled && state_get() != STATE_CYCLE) {
++            thc.active = Off;
++            if(st2_motor_running(z_motor))
++                st2_motor_stop(z_motor);
++            reset_control_filter();
++            stateHandler = state_pid_vad_lock;
++        } else
++            stateHandler();
++    }
+ 
+     if(set_feed_override) {
+         set_feed_override = false;
+@@ -1119,7 +1456,11 @@ static void reset (void)
+ 
+     task_delete(puddle_jumped, NULL);
+     task_delete(thc_start, NULL);
+-
++    cutting_spindle = NULL;
++    host_managed = waiting_for_cut_height = arc_lost = false;
++    arc_grace_ms = 0;
++    job.arc_ok_ignore = false;
++    release_z();
+     stateHandler = state_await_idle;
+     stateHandler();
+ 
+@@ -1139,10 +1480,15 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+     }
+ 
+     if(!(ok = state.on)) {
+-
+-
+         task_delete(puddle_jumped, NULL);
+         task_delete(thc_start, NULL);
++        cutting_spindle = NULL;
++        host_managed = waiting_for_cut_height = arc_lost = false;
++        arc_grace_ms = 0;
++        job.arc_ok_ignore = false;
++        job.thc_disabled = true;
++        thc.enabled = thc.active = thc.void_lock = Off;
++        release_z();
+ 
+         if(job.param.pause_at_end > 0.0f) {
+             stateHandler = state_wait;
+@@ -1151,15 +1497,17 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+ 
+         spindle_set_state_(spindle, state, 0.0f);
+ 
+-        thc.torch_on = thc.arc_ok = thc.enabled = Off;
++        thc.torch_on = thc.arc_ok = Off;
+         stateHandler = state_await_idle;
++        if(!sys.abort && state_get() == STATE_IDLE)
++            wait_for_z_release();
+         stateHandler();
+ 
+     } else {
+ 
+-        uint_fast8_t retries = plasma.arc_retries;
++        uint_fast8_t retries = max(1, plasma.arc_retries);
+ 
+-        if(job.param.pierce_height != 0.0f)
++        if(!host_managed && !job.thc_disabled && job.param.pierce_height != 0.0f)
+             ok = moveto(job.param.pierce_height);
+ 
+         if(ok) do {
+@@ -1171,10 +1519,18 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+             if((thc.arc_ok = ioport_wait_on_input(Port_Digital, port_arc_ok, WaitMode_High, plasma.arc_fail_timeout) != -1)) {
+ 
+                 retries = 0;
++                cutting_spindle = spindle;
++                arc_lost = false;
+                 stateHandler = state_wait;
+                 job.pierce_count++;
+ 
+                 report_message("arc ok", Message_Plain);
++
++                if(host_managed || job.thc_disabled) {
++                stateHandler = state_arc_monitor;
++                    return;
++                }
++
+                 if((ok = delay_sec(job.param.pierce_delay, DelayMode_Dwell))) {
+                     st2_set_position(z_motor, 0LL);
+ 
+@@ -1186,17 +1542,16 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+                         } else
+                             ok = moveto(job.param.cut_height);
+                     }
+-                    if(ok) {
+-                        hal.stepper.claim_motor(Z_AXIS, true);
++                    if(ok)
+                         task_add_delayed(thc_start, NULL, (uint32_t)ceilf(1000.0f * plasma.thc_delay));
+-                    }
+                 }
+ 
+             } else if(!(--retries)) {
+                 thc.torch_on = Off;
+                 report_message("arc failed", Message_Warning);
+                 spindle_set_state_(spindle, (spindle_state_t){0}, 0.0f);
+-                ok = pause_on_error(); // output message and enter similar state as tool change state (allow jogging before resume)
++                pause_on_error();
++                ok = false;
+             } else {
+                 thc.torch_on = Off;
+                 report_message("arc delay", Message_Plain);
+@@ -1279,6 +1634,12 @@ static void onProgramCompleted (program_flow_t program_flow, bool check_mode)
+     job.pierce_total = job.pierce_count;
+     job.pierce_count = 0;
+ 
++    task_delete(thc_start, NULL);
++    waiting_for_cut_height = false;
++    job.thc_disabled = true;
++    thc.enabled = thc.active = thc.void_lock = Off;
++    release_z();
++
+     if(on_program_completed)
+         on_program_completed(program_flow, check_mode);
+ }
+@@ -1333,20 +1694,24 @@ static void plasma_setup (settings_t *settings, settings_changed_flags_t changed
+         on_program_completed = grbl.on_program_completed;
+         grbl.on_program_completed = onProgramCompleted;
+ 
++#if !PLASMA_FIXED_HEIGHT_ONLY
+         if(st2_motor_poll(z_motor)) {
+             on_execute_realtime = grbl.on_execute_realtime;
+             grbl.on_execute_realtime = onExecuteRealtime;
+         }
++#endif
+ 
+         task_add_systick(exec_state_machine, NULL);
+     }
+ 
+     // Reclaim entry points that may have been changed on settings change.
+ 
++#if !PLASMA_FIXED_HEIGHT_ONLY
+     if(hal.stepper.pulse_start != stepperPulseStart) {
+         stepper_pulse_start = hal.stepper.pulse_start;
+         hal.stepper.pulse_start = stepperPulseStart;
+     }
++#endif
+ }
+ 
+ PROGMEM static const setting_group_detail_t plasma_groups[] = {
+@@ -1368,6 +1733,11 @@ static bool is_setting_available (const setting_detail_t *setting, uint_fast16_t
+             ok = a_in.n_ports >= 1;
+             break;
+ 
++        case Setting_Arc_VoltageScale:
++        case Setting_Arc_VoltageOffset:
++            ok = PLASMA_VOLTAGE_MONITOR_ONLY ? a_in.n_ports >= 1 : init_ok && plasma.mode == Plasma_ModeVoltage;
++            break;
++
+         case Setting_THC_VADThreshold:
+         case Setting_THC_FeedFactor:
+             ok = init_ok;
+@@ -1501,41 +1871,42 @@ static void plasma_settings_save (void)
+ static void plasma_settings_restore (void)
+ {
+     static const plasma_settings_t default_settings = {
+-        .option.flags = 0,
+-        .thc_delay = 3.0f,
+-        .thc_threshold = 1.0f,
++        .option.flags = PLASMA_PROTECTED_THC_ENABLE ? 2 : 0,
++        .thc_delay = PLASMA_PROTECTED_THC_ENABLE ? 1.5f : 3.0f,
++        .thc_threshold = PLASMA_PROTECTED_THC_ENABLE ? 3.0f : 1.0f,
+         .thc_override = 100,
+         .vad_threshold = 90,
+         .pause_at_end = 0.0f,
+         .pierce_delay = 0.0f,
+         .pierce_height = 1.0f,
+-        .arc_fail_timeout = 3.0f,
+-        .arc_retries = 3,
++        .mode = (plasma_mode_t)PLASMA_DEFAULT_MODE,
++        .arc_retries = PLASMA_DEFAULT_ARC_RETRIES,
+         .arc_retry_delay = 3.0f,
+         .arc_fail_timeout = 3.0f,
+-        .arc_voltage_scale = 1.0f,
++        .arc_voltage_scale = PLASMA_DEFAULT_ARC_VOLTAGE_SCALE,
+         .arc_voltage_offset = 0.0f,
+         .arc_height_per_volt = 0.1f,
+         .arc_ok_high_voltage = 150.0,
+         .arc_ok_low_voltage = 100.0f,
+-        .feed_factor = 10,
++        .feed_factor = PLASMA_PROTECTED_THC_ENABLE ? 5 : 10,
+         .pid.p_gain = 1.0f,
+         .pid.i_gain = 0.0f,
+         .pid.d_gain = 0.0f,
+-        .port_arc_ok = IOPORT_UNASSIGNED,
+-        .port_arc_voltage = IOPORT_UNASSIGNED,
++        .port_arc_ok = PLASMA_DEFAULT_ARC_OK_PORT,
++        .port_arc_voltage = PLASMA_DEFAULT_ARC_VOLTAGE_PORT,
+         .port_cutter_down = IOPORT_UNASSIGNED,
+         .port_cutter_up = IOPORT_UNASSIGNED
+     };
+ 
+     memcpy(&plasma, &default_settings, sizeof(plasma_settings_t));
+ 
+-    if((plasma.port_arc_ok = d_in.get_next(&d_in, IOPORT_UNASSIGNED, "Arc ok", (pin_cap_t){})) != IOPORT_UNASSIGNED && updown_enabled) {
++    if(plasma.port_arc_ok == IOPORT_UNASSIGNED &&
++       (plasma.port_arc_ok = d_in.get_next(&d_in, IOPORT_UNASSIGNED, "Arc ok", (pin_cap_t){})) != IOPORT_UNASSIGNED && updown_enabled) {
+         plasma.port_cutter_down = d_in.get_next(&d_in, plasma.port_arc_ok, "Cutter down", (pin_cap_t){});
+         plasma.port_cutter_up = d_in.get_next(&d_in, plasma.port_cutter_down, "Cutter up", (pin_cap_t){});
+     }
+ 
+-    if((plasma.mode = mode) == Plasma_ModeVoltage)
++    if((mode = plasma.mode) == Plasma_ModeVoltage && plasma.port_arc_voltage == IOPORT_UNASSIGNED)
+         plasma.port_arc_voltage = a_in.get_next(&a_in, IOPORT_UNASSIGNED, "Arc voltage", (pin_cap_t){});
+ 
+     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&plasma, sizeof(plasma_settings_t), true);
+@@ -1562,11 +1933,54 @@ static void plasma_settings_load (void)
+         plasma_settings_restore();
+     }
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++    plasma.mode = (plasma_mode_t)PLASMA_DEFAULT_MODE;
++    plasma.port_arc_ok = PLASMA_DEFAULT_ARC_OK_PORT;
++#if PLASMA_VOLTAGE_MONITOR_ONLY
++    plasma.port_arc_voltage = PLASMA_DEFAULT_ARC_VOLTAGE_PORT;
++    if(plasma.arc_voltage_scale <= 0.0f || plasma.arc_voltage_scale == 1.0f)
++        plasma.arc_voltage_scale = PLASMA_DEFAULT_ARC_VOLTAGE_SCALE;
++#endif
++#endif
++
++#if PLASMA_PROTECTED_THC_ENABLE
++    // This stage is deliberately voltage-mode at boot, but Z correction is
++    // still opt-in: only THC:PREPARE followed by THC:READY can enable it.
++    plasma.mode = Plasma_ModeVoltage;
++    plasma.option.sync_pos = On;
++    plasma.port_arc_ok = PLASMA_DEFAULT_ARC_OK_PORT;
++    plasma.port_arc_voltage = PLASMA_DEFAULT_ARC_VOLTAGE_PORT;
++    plasma.arc_voltage_scale = PLASMA_DEFAULT_ARC_VOLTAGE_SCALE;
++    plasma.thc_delay = 1.5f;
++    plasma.thc_threshold = 3.0f;
++    plasma.vad_threshold = 90;
++    plasma.feed_factor = 5;
++#endif
++
+     if((mode = plasma.mode) == Plasma_ModeOff)
+         return;
+ 
++#if PLASMA_VOLTAGE_MONITOR_ONLY
++    voltage_monitor_available = false;
++
++    if(plasma.port_arc_voltage != IOPORT_UNASSIGNED && a_in.n_ports) {
++
++        uint8_t port = plasma.port_arc_voltage;
++        xbar_t *p;
++
++        if((voltage_monitor_available = !!(p = a_in.claim(&a_in, &port, "Arc voltage monitor", (pin_cap_t){})) && p->get_value))
++            memcpy(&parc_voltage, p, sizeof(xbar_t));
++    }
++
++    if(!voltage_monitor_available)
++        task_run_on_startup(report_warning, "Arc voltage monitor failed; protected THC remains disabled.");
++#endif
++
+     if(!(init_ok = mode != Plasma_ModeVoltage)) {
+ 
++#if PLASMA_VOLTAGE_MONITOR_ONLY
++        init_ok = voltage_monitor_available;
++#else
+         uint8_t port;
+ 
+         if((port = plasma.port_arc_voltage) != IOPORT_UNASSIGNED && a_in.n_ports) {
+@@ -1581,6 +1995,7 @@ static void plasma_settings_load (void)
+             init_ok = true;
+             mode = Plasma_ModeUpDown;
+         }
++#endif
+     }
+ 
+     init_ok = init_ok && plasma_claim_digital_in(&arc_ok, plasma.port_arc_ok, "Arc ok");
+@@ -1594,6 +2009,9 @@ static void plasma_settings_load (void)
+     if(init_ok) {
+ 
+         set_job_params(NULL);
++        // Safe default for both buttons. Only the explicit host handshake
++        // used by the application's "Con THC" path can clear this flag.
++        job.thc_disabled = true;
+ 
+         updown_enabled = mode == Plasma_ModeUpDown;
+ 
+@@ -1696,17 +2114,23 @@ void plasma_init (void)
+ 
+     bool ok;
+ 
+-    if((ok = !!hal.stepper.output_step && ioports_cfg(&d_in, Port_Digital, Port_Input)->n_ports)) {
++    if((ok = ioports_cfg(&d_in, Port_Digital, Port_Input)->n_ports > 0)) {
+         ioports_cfg(&a_in, Port_Analog, Port_Input);
+-        ok = (a_in.n_ports >= 1 && d_in.n_ports >= 1) || (d_in.n_ports >= 3);
+-    }
+-
+-    if(ok) {
+-        updown_enabled = a_in.n_ports == 0;
++#if !PLASMA_FIXED_HEIGHT_ONLY
++        ok = !!hal.stepper.output_step;
++        ok = ok && ((a_in.n_ports >= 1 && d_in.n_ports >= 1) || (d_in.n_ports >= 3));
++        updown_enabled = ok && a_in.n_ports == 0;
++#else
++        updown_enabled = false;
++#endif
+         ok = (nvs_address = nvs_alloc(sizeof(plasma_settings_t)));
+     }
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++    if(ok) {
++#else
+     if(ok && (z_motor = st2_motor_init(Z_AXIS, false)) != NULL) {
++#endif
+ 
+         settings_register(&setting_details);
+         system_register_commands(&thc_commands);
+@@ -1728,11 +2152,15 @@ void plasma_init (void)
+         hal.control_interrupt_callback = trap_control_interrupts;
+ */
+ 
++#if PLASMA_FIXED_HEIGHT_ONLY
++        setting_remove_elements(Setting_THC_Mode, 0b0111, true);
++#else
+         if(a_in.n_ports == 0)
+             setting_remove_elements(Setting_THC_Mode, 0b1101, true);
+ 
+         if(d_in.n_ports < 3)
+             setting_remove_elements(Setting_THC_Mode, 0b1011, true);
++#endif
+ 
+         // Load materials
+         linuxcnc_init();
+diff --git a/thc.h b/thc.h
+index 76cf290..7240f4e 100644
+--- a/thc.h
++++ b/thc.h
+@@ -27,6 +27,10 @@
+ 
+ #if PLASMA_ENABLE
+ 
++#ifndef sizeof_field
++#define sizeof_field(type, field) sizeof(((type *)0)->field)
++#endif
++
+ #define PLASMA_TMP_MATERIAL_ID_START 1000000
+ // parameter lookup entries
+ #define PLASMA_MATERIAL_NUMBER  12

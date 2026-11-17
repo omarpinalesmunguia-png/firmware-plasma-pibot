@@ -3,7 +3,7 @@
 La limpieza se realiza con opciones de compilacion. No se elimina codigo del
 nucleo grblHAL ni de los submodulos oficiales.
 
-## Activo en la Etapa 3.1
+## Activo en la Etapa 4
 
 | Funcion | Estado | Motivo |
 |---|---:|---|
@@ -13,25 +13,26 @@ nucleo grblHAL ni de los submodulos oficiales.
 | Sonda / cabezal flotante | Activa | Referencia Z antes del corte |
 | E-stop, Feed Hold, Cycle Start | Activos | Controles fisicos de seguridad |
 | WiFi SoftAP y Telnet | Activos | Conexion con la aplicacion de escritorio |
-| Plugin Plasma | Arc OK solamente | Supervisa encendido y perdida de arco sin controlar Z |
-| Corte a altura fija | Activo para prueba | La aplicacion ordena toda posicion Z |
-| MCP3221 / lectura de voltaje | Monitor tolerante a fallos | Mide sin corregir Z y limita cada espera I2C a 20 ms |
+| Plugin Plasma | Voltaje protegido | Solo controla Z tras PREPARE/READY |
+| Corte a altura fija | Activo y aislado | Sin PREPARE el plugin no puede reclamar Z |
+| MCP3221 / lectura de voltaje | Monitor tolerante a fallos | Limita cada espera I2C a 20 ms y bloquea Z ante fallo |
+| Correccion automatica Z | Prueba recta controlada | +/-0.50 mm, pasos de 0.03 mm y maximo 30 mm/min |
 
-La Etapa 3.1 autoriza pruebas controladas de telemetria durante cortes a altura
-fija. Todavia no autoriza correccion automatica de altura.
+La Etapa 4 autoriza una primera prueba THC en linea recta. Altura fija sigue
+siendo el modo de referencia y no habilita correccion Z.
 
-## Presente pero apagado hasta las etapas siguientes
+## Limitado hasta las etapas siguientes
 
 | Funcion | Estado | Condicion para habilitarla |
 |---|---:|---|
-| Plugin Plasma/THC completo | Limitado a Arc OK | La parte que controla Z permanece excluida |
+| Plugin Plasma/THC completo | Activo con limites | Falta validar contornos, esquinas y cruces |
 | Arc OK para el plugin | Activo | GPIO39, puerto auxiliar logico 7 |
-| Correccion automatica Z | Apagada | Etapa 4: habilitarla solo despues de validar altura fija y voltaje |
+| Correccion automatica Z | Opt-in | Solo PREPARE/READY; LEADOUT y M5 la desactivan |
 
-La bandera `PIBOT_PLASMA_PLUGIN_ENABLE` esta activa. Las banderas
-`PIBOT_PLASMA_FIXED_HEIGHT_ONLY=1`, `PIBOT_ARC_VOLTAGE_ENABLE=1` y
-`PIBOT_VOLTAGE_MONITOR_ONLY=1` permiten medir el voltaje, pero impiden que el
-plugin tome control de Z.
+Las banderas `PIBOT_PLASMA_PLUGIN_ENABLE`, `PIBOT_ARC_VOLTAGE_ENABLE` y
+`PIBOT_PROTECTED_THC_ENABLE` estan activas. `PIBOT_PLASMA_FIXED_HEIGHT_ONLY=0`
+permite la inyeccion secundaria de pasos, pero el protocolo de la aplicacion y
+los limites compilados mantienen el control Z deshabilitado por defecto.
 
 ## Deshabilitado
 
@@ -61,9 +62,9 @@ plugin tome control de Z.
 | MCP3221 SDA activo | GPIO14 |
 | MCP3221 SCL activo | GPIO13 |
 
-## Criterio para avanzar a la etapa de correccion de altura
+## Criterio para avanzar a contornos con THC
 
-Antes de habilitar cualquier correccion Z, el firmware de Etapa 3.1 debe:
+Antes de probar contornos, el firmware de Etapa 4 debe:
 
 1. Encender sin alarma inesperada.
 2. Mover X/Y/Z en el sentido correcto y conservar posicion.
@@ -72,8 +73,7 @@ Antes de habilitar cualquier correccion Z, el firmware de Etapa 3.1 debe:
 5. Confirmar que ningun movimiento modifica Z sin una orden explicita.
 6. Registrar voltaje en reposo, perforacion, corte estable y salida de arco.
 7. Validar la escala `$361` y el offset `$362` con una referencia confiable.
-8. Confirmar que un fallo del MCP3221 se reporta como invalido y no afecta
-   WiFi, movimiento ni Arc OK.
-
-No se habilitara correccion Z hasta repetir y aprobar varios cortes a altura
-fija con telemetria consistente.
+8. Confirmar que un fallo del MCP3221 bloquea la correccion sin afectar WiFi,
+   XY ni Arc OK.
+9. Confirmar en una linea que Z nunca sale de 0.80 a 1.80 mm.
+10. Confirmar que un pico aislado de voltaje no produce movimiento Z.

@@ -27,20 +27,21 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - `main/plasma` es un submodulo del repositorio oficial, no una copia suelta.
 - `3rdParty.cmake` agrega las fuentes oficiales del plugin usando el punto de
   extension previsto por el controlador ESP32.
-- La rama de Etapa 3.1 conserva el modo Arc OK y la altura fija de la Etapa 2.
-- El MCP3221 esta activo solamente para telemetria; la adaptacion impide que
-  el plugin reclame o mueva Z.
+- La rama de Etapa 4 conserva altura fija como modo seguro y agrega un THC
+  opt-in para la primera prueba recta.
+- El MCP3221 alimenta un filtro de mediana; fallos y picos bloquean la
+  correccion sin detener XY ni WiFi.
 - Las lecturas I2C tienen tiempo limitado, deteccion de fallo y reintento para
   que una perturbacion del plasma no bloquee estados ni WiFi.
-- La regulacion THC permanece deshabilitada.
+- La regulacion THC queda limitada a +/-0.50 mm, pasos de 0.03 mm y 30 mm/min.
 
 ## Configuracion minima agregada
 
 La rama conserva la configuracion validada de Etapa 1 para tres ejes, sonda,
 controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK y lectura de
-voltaje sin control Z. Consulta `CONFIGURACION_MINIMA.md`,
+voltaje y control Z protegido. Consulta `CONFIGURACION_MINIMA.md`,
 `ETAPA2_ALTURA_FIJA.md`, `ETAPA3_TELEMETRIA_THC.md` y
-`ETAPA3_1_TELEMETRIA_ROBUSTA.md`.
+`ETAPA3_1_TELEMETRIA_ROBUSTA.md` y `ETAPA4_THC_PROTEGIDO.md`.
 
 La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
 componente oficial de red. Esta correccion usa el keepalive corto que ya habia
@@ -51,12 +52,12 @@ sin cerrar sockets directamente desde el evento WiFi.
 
 Crear una configuracion PiBot minima y auditable:
 
-1. Compilar para ESP32-S3 con modo fijo y MCP3221 como monitor.
+1. Compilar para ESP32-S3 con THC protegido y MCP3221 robusto.
 2. Verificar `$I`, `$350`, `$361`, `$362`, `$366`, `$367` y `$PINS`.
 3. Repetir en seco movimientos, sondeo y M3/M5.
-4. Probar cortes a altura fija, confirmar que Z no cambia y registrar voltaje.
-5. Calibrar escala y offset antes de interpretar el error de altura.
-6. Implementar la correccion Z en una etapa independiente.
+4. Repetir altura fija y confirmar que Z no cambia.
+5. Probar una linea recta con objetivo 104 V y limites de Etapa 4.
+6. Validar filtro, sentido de correccion y sincronizacion Z antes de contornos.
 
 ## Obtener exactamente esta base
 

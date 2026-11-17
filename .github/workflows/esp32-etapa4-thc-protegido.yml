@@ -1,0 +1,45 @@
+name: Build PiBot Etapa 4 THC Protegido
+
+on:
+  push:
+    branches:
+      - base-limpia-etapa4-thc-protegido
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
+      - name: Aplicar THC protegido y telemetria robusta
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4-thc-protegido.patch
+
+      - name: Hacer explicitos los fallos de lectura del MCP3221
+        run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
+
+      - name: Compilar para ESP32-S3 con ESP-IDF 4.4
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py set-target esp32s3 && idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin
+            -o grbl_pibot_thc_protegido_etapa4_merged_0x0.bin @flash_args"
+
+      - name: Publicar firmware THC protegido
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_thc_protegido_etapa4
+          path: |
+            build/grbl_pibot_thc_protegido_etapa4_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error

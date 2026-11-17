@@ -20,12 +20,14 @@
 // -----------------------------------------------------------------------------
 // PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
 //
-// Etapa 3.1: altura fija con telemetria tolerante a fallos del MCP3221.
-// El ADC solo mide: sus fallos no bloquean la red y nunca pueden mover Z.
+// Etapa 4: THC por voltaje, opt-in y con limites mecanicos estrictos.
+// Altura fija sigue sin mover Z. El control solo se habilita mediante el
+// protocolo PREPARE/READY de la aplicacion y se libera antes de lead-out/M5.
 #define PIBOT_PLASMA_PLUGIN_ENABLE      1
-#define PIBOT_PLASMA_FIXED_HEIGHT_ONLY  1
+#define PIBOT_PLASMA_FIXED_HEIGHT_ONLY  0
 #define PIBOT_ARC_VOLTAGE_ENABLE        1
 #define PIBOT_VOLTAGE_MONITOR_ONLY      1
+#define PIBOT_PROTECTED_THC_ENABLE      1
 
 #define BOARD_MY_MACHINE
 #define SPINDLE0_ENABLE         SPINDLE_ONOFF0
@@ -55,7 +57,7 @@
 #if PIBOT_PLASMA_PLUGIN_ENABLE
 #define PLASMA_ENABLE           1
 #define PLASMA_FIXED_HEIGHT_ONLY PIBOT_PLASMA_FIXED_HEIGHT_ONLY
-#define PLASMA_DEFAULT_MODE      3 // Arc OK solamente
+#define PLASMA_DEFAULT_MODE      1 // THC analogico protegido
 #define PLASMA_DEFAULT_ARC_OK_PORT 7
 #define PLASMA_DEFAULT_ARC_RETRIES 1
 #define PLASMA_VOLTAGE_MONITOR_ONLY PIBOT_VOLTAGE_MONITOR_ONLY
@@ -65,6 +67,13 @@
 #define PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE 20.0f
 #define PLASMA_VOLTAGE_MONITOR_MAX_FAILURES 3
 #define PLASMA_VOLTAGE_MONITOR_RETRY_TICKS 1000
+#define PLASMA_PROTECTED_THC_ENABLE PIBOT_PROTECTED_THC_ENABLE
+#define PLASMA_THC_Z_MIN_MM 0.80f
+#define PLASMA_THC_MAX_OFFSET_MM 0.50f
+#define PLASMA_THC_MAX_STEP_MM 0.03f
+#define PLASMA_THC_MAX_FEED_MM_MIN 30.0f
+#define PLASMA_THC_OUTLIER_DELTA_V 15.0f
+#define PLASMA_THC_MAX_CONTROL_ERROR_V 20.0f
 #else
 #define PLASMA_ENABLE           0
 #endif
