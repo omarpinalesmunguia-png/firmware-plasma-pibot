@@ -3,7 +3,7 @@
 La limpieza se realiza con opciones de compilacion. No se elimina codigo del
 nucleo grblHAL ni de los submodulos oficiales.
 
-## Activo en la Etapa 3
+## Activo en la Etapa 3.1
 
 | Funcion | Estado | Motivo |
 |---|---:|---|
@@ -15,9 +15,9 @@ nucleo grblHAL ni de los submodulos oficiales.
 | WiFi SoftAP y Telnet | Activos | Conexion con la aplicacion de escritorio |
 | Plugin Plasma | Arc OK solamente | Supervisa encendido y perdida de arco sin controlar Z |
 | Corte a altura fija | Activo para prueba | La aplicacion ordena toda posicion Z |
-| MCP3221 / lectura de voltaje | Activo como monitor | Mide y reporta sin corregir Z |
+| MCP3221 / lectura de voltaje | Monitor tolerante a fallos | Mide sin corregir Z y limita cada espera I2C a 20 ms |
 
-La Etapa 3 autoriza pruebas controladas de telemetria durante cortes a altura
+La Etapa 3.1 autoriza pruebas controladas de telemetria durante cortes a altura
 fija. Todavia no autoriza correccion automatica de altura.
 
 ## Presente pero apagado hasta las etapas siguientes
@@ -63,7 +63,7 @@ plugin tome control de Z.
 
 ## Criterio para avanzar a la etapa de correccion de altura
 
-Antes de habilitar cualquier correccion Z, el firmware de Etapa 3 debe:
+Antes de habilitar cualquier correccion Z, el firmware de Etapa 3.1 debe:
 
 1. Encender sin alarma inesperada.
 2. Mover X/Y/Z en el sentido correcto y conservar posicion.
@@ -72,6 +72,8 @@ Antes de habilitar cualquier correccion Z, el firmware de Etapa 3 debe:
 5. Confirmar que ningun movimiento modifica Z sin una orden explicita.
 6. Registrar voltaje en reposo, perforacion, corte estable y salida de arco.
 7. Validar la escala `$361` y el offset `$362` con una referencia confiable.
+8. Confirmar que un fallo del MCP3221 se reporta como invalido y no afecta
+   WiFi, movimiento ni Arc OK.
 
 No se habilitara correccion Z hasta repetir y aprobar varios cortes a altura
 fija con telemetria consistente.

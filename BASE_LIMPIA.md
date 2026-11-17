@@ -27,9 +27,11 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - `main/plasma` es un submodulo del repositorio oficial, no una copia suelta.
 - `3rdParty.cmake` agrega las fuentes oficiales del plugin usando el punto de
   extension previsto por el controlador ESP32.
-- La rama de Etapa 3 conserva el modo Arc OK y la altura fija de la Etapa 2.
+- La rama de Etapa 3.1 conserva el modo Arc OK y la altura fija de la Etapa 2.
 - El MCP3221 esta activo solamente para telemetria; la adaptacion impide que
   el plugin reclame o mueva Z.
+- Las lecturas I2C tienen tiempo limitado, deteccion de fallo y reintento para
+  que una perturbacion del plasma no bloquee estados ni WiFi.
 - La regulacion THC permanece deshabilitada.
 
 ## Configuracion minima agregada
@@ -37,7 +39,8 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 La rama conserva la configuracion validada de Etapa 1 para tres ejes, sonda,
 controles fisicos, WiFi/Telnet y salida M3/M5. Agrega Arc OK y lectura de
 voltaje sin control Z. Consulta `CONFIGURACION_MINIMA.md`,
-`ETAPA2_ALTURA_FIJA.md` y `ETAPA3_TELEMETRIA_THC.md`.
+`ETAPA2_ALTURA_FIJA.md`, `ETAPA3_TELEMETRIA_THC.md` y
+`ETAPA3_1_TELEMETRIA_ROBUSTA.md`.
 
 La compilacion aplica ademas `patches/pibot-network-reconnect.patch` al
 componente oficial de red. Esta correccion usa el keepalive corto que ya habia

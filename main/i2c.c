@@ -31,6 +31,10 @@
 #define I2C_CLOCK 100000
 #endif
 
+#ifndef I2C_RECEIVE_TIMEOUT_MS
+#define I2C_RECEIVE_TIMEOUT_MS 20
+#endif
+
 QueueHandle_t i2cQueue = NULL;
 SemaphoreHandle_t i2cBusy = NULL;
 
@@ -190,7 +194,7 @@ bool i2c_receive (i2c_address_t i2c_address, uint8_t *data, size_t size, bool bl
             ok = ok && i2c_master_stop(cmd) == ESP_OK;
 
             if(ok)
-                ret = i2c_master_cmd_begin(I2C_PORT, cmd, 1000 / portTICK_PERIOD_MS);
+                ret = i2c_master_cmd_begin(I2C_PORT, cmd, max(1, I2C_RECEIVE_TIMEOUT_MS / portTICK_PERIOD_MS));
 
             i2c_cmd_link_delete(cmd);
         }

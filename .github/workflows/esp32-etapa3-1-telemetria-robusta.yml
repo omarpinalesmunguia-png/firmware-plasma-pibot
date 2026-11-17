@@ -1,0 +1,48 @@
+name: Build PiBot Etapa 3.1 Telemetria Robusta
+
+on:
+  push:
+    branches:
+      - base-limpia-etapa3-1-telemetria-robusta
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
+      - name: Mantener desactivada la inyeccion secundaria de pasos
+        run: git -C main/grbl apply ../../patches/pibot-grbl-fixed-height.patch
+
+      - name: Aplicar telemetria tolerante a fallos sin control Z
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa3-1-telemetria-robusta.patch
+
+      - name: Hacer explicitos los fallos de lectura del MCP3221
+        run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
+
+      - name: Compilar para ESP32-S3 con ESP-IDF 4.4
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py set-target esp32s3 && idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin
+            -o grbl_pibot_telemetria_robusta_etapa3_1_merged_0x0.bin @flash_args"
+
+      - name: Publicar firmware de telemetria robusta
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_telemetria_robusta_etapa3_1
+          path: |
+            build/grbl_pibot_telemetria_robusta_etapa3_1_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error

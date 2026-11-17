@@ -20,8 +20,8 @@
 // -----------------------------------------------------------------------------
 // PiBot 5.88 Ultra Plasma - configuracion minima y auditable.
 //
-// Etapa 3: altura fija con supervision Arc OK y telemetria de voltaje.
-// El MCP3221 solo mide: el plugin no puede reclamar ni mover Z.
+// Etapa 3.1: altura fija con telemetria tolerante a fallos del MCP3221.
+// El ADC solo mide: sus fallos no bloquean la red y nunca pueden mover Z.
 #define PIBOT_PLASMA_PLUGIN_ENABLE      1
 #define PIBOT_PLASMA_FIXED_HEIGHT_ONLY  1
 #define PIBOT_ARC_VOLTAGE_ENABLE        1
@@ -61,7 +61,10 @@
 #define PLASMA_VOLTAGE_MONITOR_ONLY PIBOT_VOLTAGE_MONITOR_ONLY
 #define PLASMA_DEFAULT_ARC_VOLTAGE_PORT 0
 #define PLASMA_DEFAULT_ARC_VOLTAGE_SCALE 0.04180f
-#define PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS 10
+#define PLASMA_VOLTAGE_MONITOR_SAMPLE_TICKS 40 // 25 Hz sobre systick de 1 ms
+#define PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE 20.0f
+#define PLASMA_VOLTAGE_MONITOR_MAX_FAILURES 3
+#define PLASMA_VOLTAGE_MONITOR_RETRY_TICKS 1000
 #else
 #define PLASMA_ENABLE           0
 #endif
