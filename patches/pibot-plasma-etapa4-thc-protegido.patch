@@ -81,10 +81,11 @@ index 19a5a1b..4ca03f0 100644
  typedef enum {
      THC_None = 0,
      THC_Up,
-@@ -138,13 +203,14 @@ static void state_thc_updown (void);
+@@ -138,13 +203,15 @@ static void state_thc_updown (void);
  static void state_updown_vad_lock (void);
  static void state_arc_monitor (void);
  static void state_await_puddle_clear (void);
++static void state_await_idle (void);
 +static void thc_start (void *data);
 +static status_code_t thc_host_command (char *command);
  
