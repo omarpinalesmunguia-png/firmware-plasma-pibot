@@ -33,13 +33,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_thc_protegido_etapa4_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa4_validacion_i2s_seca_merged_0x0.bin @flash_args"
 
       - name: Publicar firmware THC protegido
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_thc_protegido_etapa4
+          name: pibot_etapa4_validacion_i2s_seca
           path: |
-            build/grbl_pibot_thc_protegido_etapa4_merged_0x0.bin
+            build/grbl_pibot_etapa4_validacion_i2s_seca_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error

@@ -34,6 +34,8 @@ interfaz del nucleo y precede al ultimo cambio, que solo actualiza el README.
 - Las lecturas I2C tienen tiempo limitado, deteccion de fallo y reintento para
   que una perturbacion del plasma no bloquee estados ni WiFi.
 - La regulacion THC queda limitada a +/-0.50 mm, pasos de 0.03 mm y 30 mm/min.
+- La inyeccion Z usa I2S `passthrough` en el ESP32-S3; antes de cualquier corte
+  debe aprobar distancia, velocidad y repetibilidad en seco.
 
 ## Configuracion minima agregada
 
@@ -55,9 +57,10 @@ Crear una configuracion PiBot minima y auditable:
 1. Compilar para ESP32-S3 con THC protegido y MCP3221 robusto.
 2. Verificar `$I`, `$350`, `$361`, `$362`, `$366`, `$367` y `$PINS`.
 3. Repetir en seco movimientos, sondeo y M3/M5.
-4. Repetir altura fija y confirmar que Z no cambia.
-5. Probar una linea recta con objetivo 104 V y limites de Etapa 4.
-6. Validar filtro, sentido de correccion y sincronizacion Z antes de contornos.
+4. Aprobar la prueba seca I2S 4A a varias velocidades y distancias.
+5. Repetir altura fija y confirmar que Z no cambia.
+6. Probar una linea recta con objetivo 104 V y limites de Etapa 4.
+7. Validar filtro, sentido de correccion y sincronizacion Z antes de contornos.
 
 ## Obtener exactamente esta base
 

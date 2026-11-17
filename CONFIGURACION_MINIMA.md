@@ -16,10 +16,11 @@ nucleo grblHAL ni de los submodulos oficiales.
 | Plugin Plasma | Voltaje protegido | Solo controla Z tras PREPARE/READY |
 | Corte a altura fija | Activo y aislado | Sin PREPARE el plugin no puede reclamar Z |
 | MCP3221 / lectura de voltaje | Monitor tolerante a fallos | Limita cada espera I2C a 20 ms y bloquea Z ante fallo |
-| Correccion automatica Z | Prueba recta controlada | +/-0.50 mm, pasos de 0.03 mm y maximo 30 mm/min |
+| Correccion automatica Z | Pendiente de prueba seca I2S | +/-0.50 mm, pasos de 0.03 mm y maximo 30 mm/min |
 
-La Etapa 4 autoriza una primera prueba THC en linea recta. Altura fija sigue
-siendo el modo de referencia y no habilita correccion Z.
+La Etapa 4 primero autoriza solamente la validacion de movimiento I2S en seco.
+La linea THC se autoriza despues de comprobar distancia, tiempo, sentido y
+ausencia de deriva. Altura fija sigue siendo el modo de referencia.
 
 ## Limitado hasta las etapas siguientes
 
@@ -66,8 +67,8 @@ los limites compilados mantienen el control Z deshabilitado por defecto.
 
 Antes de probar contornos, el firmware de Etapa 4 debe:
 
-1. Encender sin alarma inesperada.
-2. Mover X/Y/Z en el sentido correcto y conservar posicion.
+1. Encender sin alarma inesperada y aprobar la prueba seca I2S 4A.
+2. Mover X/Y/Z en el sentido correcto y conservar posicion a varias velocidades.
 3. Sondear y repetir Z0 sin deriva.
 4. Activar y desactivar en seco la salida M3/M5.
 5. Confirmar que ningun movimiento modifica Z sin una orden explicita.

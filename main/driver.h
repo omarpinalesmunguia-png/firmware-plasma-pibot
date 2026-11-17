@@ -209,7 +209,13 @@ typedef struct {
 #endif
 
 #if defined(USE_I2S_OUT) && STEP_INJECT_ENABLE
+#if CONFIG_IDF_TARGET_ESP32S3
+// El ESP32-S3 de la PiBot puede inyectar pasos usando el anillo corto de
+// passthrough. El modo I2S streaming no permite reclamar Z para el THC.
+#define I2S_STEP_INJECT 1
+#else
 #error "Step injection not yet possible with I2S streaming!"
+#endif
 #endif
 
 #if DRIVER_SPINDLE_PWM_ENABLE && !defined(SPINDLE_PWM_PIN)

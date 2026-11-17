@@ -5,6 +5,17 @@ base limpia. La correccion no queda activa por el solo hecho de encender la
 antorcha: requiere el protocolo `THC:PREPARE` / `THC:READY` de la aplicacion.
 El boton de altura fija mantiene Z fuera del control del plugin.
 
+## Adaptacion I2S de la PiBot
+
+Los motores de la PiBot 5.88 Ultra reciben STEP/DIR por un expansor I2S. El
+controlador oficial no permite la inyeccion directa de pasos mientras usa el
+flujo I2S; intentar activar THC asi detiene la compilacion deliberadamente.
+
+Esta rama conserva I2S y usa el modo `passthrough` del ESP32-S3 para que los
+pulsos normales y los pulsos THC compartan un solo anillo DMA y una seccion
+critica. Tambien limita la frecuencia maxima para no sobrecargar ese anillo.
+Es una adaptacion especifica de la PiBot que debe validarse primero sin plasma.
+
 ## Protecciones
 
 - Objetivo enviado por la aplicacion para cada contorno.
@@ -24,7 +35,25 @@ El boton de altura fija mantiene Z fuera del control del plugin.
 - `LEADOUT`, `M5`, reset y fin de trabajo liberan el motor Z y sincronizan su
   posicion con grblHAL.
 
-## Configuracion de la primera prueba
+## Prueba 4A obligatoria: movimiento en seco
+
+El primer bin se publica como
+`grbl_pibot_etapa4_validacion_i2s_seca_merged_0x0.bin`. No se autoriza cortar
+con este bin hasta completar estas comprobaciones:
+
+1. Plasma apagado y M3 sin posibilidad de encender la antorcha.
+2. Medir X100 y Y100 a F400, F1000 y F3000.
+3. Medir Z20 a F100, F300 y F600.
+4. Ejecutar una linea X300 F400 y comprobar tiempo y distancia.
+5. Repetir X300 F400 mientras se consulta estado por WiFi.
+6. Hacer diez sondeos y verificar que Z0 no deriva.
+7. Confirmar que el boton de altura fija no produce ningun movimiento Z
+   durante un recorrido XY.
+
+Solo si distancia, sentido, tiempo, pausa y coordenadas son consistentes se
+autoriza preparar la prueba 4B.
+
+## Prueba 4B: primera linea con THC
 
 - Placa ya validada con aire estable.
 - Linea recta de 100 mm.
@@ -32,7 +61,8 @@ El boton de altura fija mantiene Z fuera del control del plugin.
 - Avance: F400.
 - Objetivo inicial: 104 V.
 - Primero repetir una linea con el boton de altura fija.
-- Despues ejecutar una sola linea con el boton `Con THC activo`.
+- Despues ejecutar una sola linea con el boton `Con THC activo`, unicamente
+  despues de aprobar la prueba 4A.
 
 Durante la prueba THC, Z debe permanecer entre 0.80 y 1.80 mm. Las letras `U`
 y `D` del campo THC indican correccion; `R` indica regulacion habilitada. Un

@@ -740,9 +740,18 @@ IRAM_ATTR static void stepperCyclesPerTick (uint32_t cycles_per_tick)
 
 // Set stepper direction output pins
 // NOTE: see note for set_step_outputs()
+#if I2S_STEP_INJECT
+static volatile axes_signals_t planner_dir = {0};
+#endif
+
 inline IRAM_ATTR static void set_dir_outputs (axes_signals_t dir_out)
 {
     dir_out.bits ^= settings.steppers.dir_invert.bits;
+
+#if I2S_STEP_INJECT
+    // Restaurar esta direccion cuando el THC libere un eje reclamado.
+    planner_dir.bits = dir_out.bits;
+#endif
 
 #if STEP_INJECT_ENABLE
 
@@ -937,6 +946,9 @@ static void I2SStepperWakeUp (void)
 inline __attribute__((always_inline)) IRAM_ATTR static void i2s_set_step_outputs (axes_signals_t step_outbits_1)
 {
     axes_signals_t step_outbits_2;
+#if I2S_STEP_INJECT
+    step_outbits_1.bits &= ~step_pulse.inject.claimed.bits;
+#endif
     step_outbits_2.mask = (step_outbits_1.mask & motors_2.mask) ^ settings.steppers.step_invert.mask;
     step_outbits_1.mask = (step_outbits_1.mask & motors_1.mask) ^ settings.steppers.step_invert.mask;
 
@@ -979,6 +991,9 @@ inline __attribute__((always_inline)) IRAM_ATTR static void i2s_set_step_outputs
 // Set stepper pulse output pins
 inline __attribute__((always_inline)) IRAM_ATTR static void i2s_set_step_outputs (axes_signals_t step_outbits)
 {
+#if I2S_STEP_INJECT
+    step_outbits.bits &= ~step_pulse.inject.claimed.bits;
+#endif
     step_outbits.value ^= settings.steppers.step_invert.mask;
     DIGITAL_OUT(X_STEP_PIN, step_outbits.x);
     DIGITAL_OUT(Y_STEP_PIN, step_outbits.y);
@@ -1020,6 +1035,97 @@ void i2s_step_sink (void)
 {
     //NOOP
 }
+
+#if I2S_STEP_INJECT
+
+// Serializa los pulsos del planificador y del segundo generador de pasos. En
+// passthrough cada pulso se escribe al anillo DMA corto y se confirma antes de
+// reutilizar sus entradas.
+static portMUX_TYPE inject_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void I2SStepperClaimMotor (uint_fast8_t axis_id, bool claim)
+{
+    portENTER_CRITICAL(&inject_mux);
+
+    if(claim)
+        step_pulse.inject.claimed.mask |= ((1 << axis_id) & AXES_BITMASK);
+    else {
+        step_pulse.inject.claimed.mask &= ~(1 << axis_id);
+
+        switch(axis_id) {
+            case X_AXIS:
+                DIGITAL_OUT(X_DIRECTION_PIN, planner_dir.x);
+                break;
+            case Y_AXIS:
+                DIGITAL_OUT(Y_DIRECTION_PIN, planner_dir.y);
+                break;
+#ifdef Z_DIRECTION_PIN
+            case Z_AXIS:
+                DIGITAL_OUT(Z_DIRECTION_PIN, planner_dir.z);
+  #if Z_GANGED
+                DIGITAL_OUT(Z2_DIRECTION_PIN, planner_dir.z ^ settings.steppers.ganged_dir_invert.z);
+  #endif
+                break;
+#endif
+            default:
+                break;
+        }
+    }
+
+    step_pulse.inject.axes.bits = step_pulse.inject.claimed.bits;
+
+    portEXIT_CRITICAL(&inject_mux);
+}
+
+IRAM_ATTR static void I2SStepperOutputStep (axes_signals_t step_out, axes_signals_t dir_out)
+{
+    bool dir_changed = false;
+
+    if(!(step_out.bits &= step_pulse.inject.claimed.bits) || i2s_out_get_pulser_status() != PASSTHROUGH)
+        return;
+
+    dir_out.bits ^= settings.steppers.dir_invert.bits;
+
+    portENTER_CRITICAL_ISR(&inject_mux);
+
+    if(step_out.x) {
+        if(DIGITAL_IN(X_DIRECTION_PIN) != dir_out.x) {
+            dir_changed = true;
+            DIGITAL_OUT(X_DIRECTION_PIN, dir_out.x);
+        }
+        DIGITAL_OUT(X_STEP_PIN, !settings.steppers.step_invert.x);
+    }
+
+    if(step_out.y) {
+        if(DIGITAL_IN(Y_DIRECTION_PIN) != dir_out.y) {
+            dir_changed = true;
+            DIGITAL_OUT(Y_DIRECTION_PIN, dir_out.y);
+        }
+        DIGITAL_OUT(Y_STEP_PIN, !settings.steppers.step_invert.y);
+    }
+
+#ifdef Z_STEP_PIN
+    if(step_out.z) {
+        if(DIGITAL_IN(Z_DIRECTION_PIN) != dir_out.z) {
+            dir_changed = true;
+            DIGITAL_OUT(Z_DIRECTION_PIN, dir_out.z);
+  #if Z_GANGED
+            DIGITAL_OUT(Z2_DIRECTION_PIN, dir_out.z ^ settings.steppers.ganged_dir_invert.z);
+  #endif
+        }
+        DIGITAL_OUT(Z_STEP_PIN, !settings.steppers.step_invert.z);
+  #if Z_GANGED
+        DIGITAL_OUT(Z2_STEP_PIN, !settings.steppers.step_invert.z);
+  #endif
+    }
+#endif
+
+    i2s_out_commit(i2s_step_samples, dir_changed ? i2s_delay_samples : 0);
+
+    portEXIT_CRITICAL_ISR(&inject_mux);
+}
+
+#endif // I2S_STEP_INJECT
 
 void I2SReset (void)
 {
@@ -1684,6 +1790,10 @@ IRAM_ATTR static void stepperPulseStart (stepper_t *stepper)
     static bool add_dir_delay = false;
 #endif
 
+#if I2S_STEP_INJECT
+    portENTER_CRITICAL_ISR(&inject_mux);
+#endif
+
     if(stepper->dir_changed.bits) {
         stepper->dir_changed.bits = 0;
         set_dir_outputs(stepper->dir_out);
@@ -1702,6 +1812,10 @@ IRAM_ATTR static void stepperPulseStart (stepper_t *stepper)
         set_step_outputs(stepper->step_out);
 #endif
     }
+
+#if I2S_STEP_INJECT
+    portEXIT_CRITICAL_ISR(&inject_mux);
+#endif
 }
 
 #else
@@ -1752,6 +1866,9 @@ IRAM_ATTR static void stepperGoIdle (bool clear_signals)
 
 static void i2s_set_streaming_mode (bool stream)
 {
+#if I2S_STEP_INJECT
+    stream = false;
+#endif
 #if CONFIG_IDF_TARGET_ESP32S3
     TIMERG0.hw_timer[STEP_TIMER_INDEX].config.tn_en = 0;
 #else
@@ -2831,6 +2948,13 @@ static void on_settings_changed (settings_t *settings, settings_changed_flags_t 
         i2s_delay_samples = i2s_delay_length / I2S_OUT_USEC_PER_PULSE;
         i2s_step_samples = i2s_step_length / I2S_OUT_USEC_PER_PULSE;
 
+#if I2S_STEP_INJECT
+        // El anillo passthrough tiene 12 muestras. Limitar la frecuencia evita
+        // que un pulso normal y uno inyectado ocupen mas muestras que el anillo.
+        t_min_period = max(t_min_period, (uint32_t)ceilf((hal.f_step_timer / 1000000.0f) *
+                                          (float)((i2s_delay_samples + i2s_step_samples + 2) * I2S_OUT_USEC_PER_PULSE)));
+#endif
+
 //        hal.max_step_rate = 250000UL / (i2s_delay_samples + i2s_step_samples);
 
 #else
@@ -3205,7 +3329,11 @@ static bool driver_setup (settings_t *settings)
         i2s_set_step_outputs((axes_signals_t){ .mask = AXES_BITMASK });
         i2s_set_step_mask();
 #endif
+#if I2S_STEP_INJECT
+        i2s_out_set_pulse_callback(i2s_step_sink);
+#else
         i2s_out_set_pulse_callback(hal.stepper.interrupt_callback);
+#endif
     }
     // else report?
 #endif
@@ -3443,11 +3571,19 @@ bool driver_init (void)
 #if USE_I2S_OUT
     hal.step_us_min = I2S_OUT_USEC_PER_PULSE;
     hal.driver_reset = I2SReset;
+  #if I2S_STEP_INJECT
+    hal.stepper.wake_up = stepperWakeUp;
+    hal.stepper.go_idle = stepperGoIdle;
+    hal.stepper.enable = stepperEnable;
+    hal.stepper.cycles_per_tick = stepperCyclesPerTick;
+    hal.stepper.pulse_start = stepperPulseStart;
+  #else
     hal.stepper.wake_up = I2SStepperWakeUp;
     hal.stepper.go_idle = I2SStepperGoIdle;
     hal.stepper.enable = stepperEnable;
     hal.stepper.cycles_per_tick = I2SStepperCyclesPerTick;
     hal.stepper.pulse_start = I2SStepperPulseStart;
+  #endif
 #else
     hal.stepper.wake_up = stepperWakeUp;
     hal.stepper.go_idle = stepperGoIdle;
@@ -3456,8 +3592,13 @@ bool driver_init (void)
     hal.stepper.pulse_start = stepperPulseStart;
 #endif
 #if STEP_INJECT_ENABLE
+  #if I2S_STEP_INJECT
+    hal.stepper.output_step = I2SStepperOutputStep;
+    hal.stepper.claim_motor = I2SStepperClaimMotor;
+  #else
     hal.stepper.output_step = stepperOutputStep;
     hal.stepper.claim_motor = stepperClaimMotor;
+  #endif
 #endif
     hal.stepper.motor_iterator = motor_iterator;
 #ifdef GANGING_ENABLED
