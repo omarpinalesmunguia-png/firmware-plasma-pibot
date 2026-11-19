@@ -48,9 +48,9 @@
 #define NETWORK_AP_HOSTNAME     "pibot-plasma"
 #define NETWORK_STA_HOSTNAME    "pibot-plasma"
 
-#define SDCARD_ENABLE           0
+#define SDCARD_ENABLE           2 // TF activa; incluye carga de archivos para ejecucion autonoma
 #define WEBUI_ENABLE            0
-#define FTP_ENABLE              0
+#define FTP_ENABLE              1
 #define ETHERNET_ENABLE         0
 #define BLUETOOTH_ENABLE        0
 #define MODBUS_ENABLE           0

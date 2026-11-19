@@ -3,6 +3,10 @@
 Esta etapa conserva el seguimiento THC protegido de la Etapa 4C y corrige la
 dependencia del enlace WiFi durante un trabajo.
 
+La configuración utilizada por la compilación ESP-IDF habilita explícitamente
+`SDCARD_ENABLE=2` y `FTP_ENABLE=1`. No depende de las opciones equivalentes de
+`platformio.ini`.
+
 ## Flujo de trabajo
 
 1. La aplicación genera el programa completo, incluidos sondeos, perforaciones,

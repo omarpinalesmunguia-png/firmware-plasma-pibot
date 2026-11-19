@@ -13,7 +13,7 @@
 
 #define BOARD_NAME "PiBot V5.88 Ultra - Plasma base limpia"
 
-// SPI de la tarjeta. La SD permanece deshabilitada en la Etapa 2.
+// SPI de la tarjeta TF. GPIO9 es CS en la PiBot 5.88 Ultra.
 #define SPI_MISO_PIN            GPIO_NUM_2
 #define SPI_MOSI_PIN            GPIO_NUM_1
 #define SPI_SCK_PIN             GPIO_NUM_21
