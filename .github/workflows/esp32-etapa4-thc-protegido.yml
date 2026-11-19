@@ -1,4 +1,4 @@
-name: Build PiBot Etapa 5B Autonoma con Diagnostico
+name: Build PiBot Etapa 5C Diagnostico de Movimiento
 
 on:
   push:
@@ -31,6 +31,9 @@ jobs:
       - name: Aplicar seguimiento ampliado y proteccion de colision
         run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4c-seguimiento-10mm.patch
 
+      - name: Apagar antorcha y registrar bloque si el movimiento se inmoviliza
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5c-motion-stall.patch
+
       - name: Hacer explicitos los fallos de lectura del MCP3221
         run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
 
@@ -42,13 +45,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa5b_diagnostico_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin @flash_args"
 
       - name: Publicar firmware autonomo con diagnostico de reinicio
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa5b_autonomo_tf_diagnostico
+          name: pibot_etapa5c_diagnostico_movimiento
           path: |
-            build/grbl_pibot_etapa5b_diagnostico_merged_0x0.bin
+            build/grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error

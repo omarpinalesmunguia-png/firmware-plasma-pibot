@@ -1,0 +1,89 @@
+diff --git a/thc.c b/thc.c
+--- a/thc.c
++++ b/thc.c
+@@ -41,6 +41,7 @@
+ #include "grbl/state_machine.h"
+ #include "grbl/strutils.h"
+ #include "grbl/motion_control.h"
++#include "grbl/planner.h"
+ #include "grbl/task.h"
+ #if NGC_EXPRESSIONS_ENABLE
+ #include "grbl/ngc_expr.h"
+@@ -71,6 +72,7 @@ extern void sheetcam_init (void);
+ #ifndef PLASMA_THC_MAX_CONTROL_ERROR_V
+ #define PLASMA_THC_MAX_CONTROL_ERROR_V  20.0f
+ #endif
++#define PLASMA_MOTION_STALL_MS           2500u
+ // Digital ports
+ #define PLASMA_THC_DISABLE_PORT         2 // output
+ #define PLASMA_TORCH_DISABLE_PORT       3 // output
+@@ -237,6 +239,9 @@ static bool host_managed = false, waiting_for_cut_height = false;
+ static bool arc_lost = false, z_claimed = false, release_z_pending = false;
+ static bool floating_head_collision = false;
+ static uint_fast8_t floating_head_samples = 0;
++static bool motion_stall_reported = false;
++static uint32_t motion_last_progress = 0;
++static int32_t motion_last_position[N_AXIS] = {0};
+ static uint32_t arc_loss_since = 0, arc_grace_ms = 0;
+ static int32_t thc_last_steps = 0;
+ static float thc_start_z = 0.0f;
+@@ -1401,6 +1406,41 @@ static void exec_state_machine (void *data)
+     sync_z_steps();
+     finish_z_release();
+ 
++    // A plasma arc must never remain commanded when the motion engine stops
++    // making progress unexpectedly. Besides making the failure safe, this
++    // message records the physical planner block instead of the SD read-ahead
++    // line, which can be dozens of lines ahead.
++    uint32_t now = hal.get_elapsed_ticks();
++    plan_block_t *motion_block = plan_get_current_block();
++    bool monitoring_motion = cutting_spindle && thc.torch_on &&
++                             state_get() == STATE_CYCLE && motion_block != NULL;
++
++    if(!monitoring_motion) {
++        motion_stall_reported = false;
++        motion_last_progress = now;
++        for(uint_fast8_t axis = 0; axis < N_AXIS; axis++)
++            motion_last_position[axis] = sys.position[axis];
++    } else {
++        bool moved = false;
++        for(uint_fast8_t axis = 0; axis < N_AXIS; axis++) {
++            if(motion_last_position[axis] != sys.position[axis]) {
++                motion_last_position[axis] = sys.position[axis];
++                moved = true;
++            }
++        }
++        if(moved)
++            motion_last_progress = now;
++        else if(!motion_stall_reported && (uint32_t)(now - motion_last_progress) >= PLASMA_MOTION_STALL_MS) {
++            char message[96];
++            motion_stall_reported = true;
++            snprintf(message, sizeof(message), "motion stalled; torch stopped; block=%lu; V=%.1f",
++                     (unsigned long)motion_block->line_number, arc_voltage);
++            report_message(message, Message_Warning);
++            pause_on_error();
++            return;
++        }
++    }
++
+     // El cabezal flotante tambien funciona como proteccion de colision durante
+     // el corte. Se filtran cinco muestras consecutivas para ignorar ruido EMI.
+     bool floating_head_triggered = cutting_spindle && thc.torch_on &&
+@@ -1492,6 +1532,8 @@ static void reset (void)
+     host_managed = waiting_for_cut_height = arc_lost = false;
+     floating_head_collision = false;
+     floating_head_samples = 0;
++    motion_stall_reported = false;
++    motion_last_progress = hal.get_elapsed_ticks();
+     arc_grace_ms = 0;
+     job.arc_ok_ignore = false;
+     release_z();
+@@ -1520,6 +1562,8 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float rpm)
+         host_managed = waiting_for_cut_height = arc_lost = false;
+         floating_head_collision = false;
+         floating_head_samples = 0;
++        motion_stall_reported = false;
++        motion_last_progress = hal.get_elapsed_ticks();
+         arc_grace_ms = 0;
+         job.arc_ok_ignore = false;
+         job.thc_disabled = true;
