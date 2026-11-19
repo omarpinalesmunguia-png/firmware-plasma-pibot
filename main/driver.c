@@ -52,6 +52,7 @@
 
 #include "grbl/task.h"
 #include "grbl/state_machine.h"
+#include "pibot_diag.h"
 #include "grbl/motor_pins.h"
 #include "grbl/machine_limits.h"
 #include "grbl/pin_bits_masks.h"
@@ -3636,6 +3637,7 @@ bool driver_init (void)
     hal.rtc.set_datetime = set_rtc_time;
 
     serialRegisterStreams();
+    pibot_diag_init();
 
     on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = wdt_tickler;

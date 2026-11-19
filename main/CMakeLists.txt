@@ -15,6 +15,7 @@ OPTION(AddMyPlugin "Add my_plugin.c" OFF)
 
 set(SRCS
  main.c
+ pibot_diag.c
  driver.c
  nvs.c
  timers.c

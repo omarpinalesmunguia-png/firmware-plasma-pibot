@@ -38,6 +38,7 @@
 #include <stdbool.h>
 
 #include "grbl/grbllib.h"
+#include "pibot_diag.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -55,6 +56,8 @@ static void vGrblTask (void *pvParameters)
 void app_main(void)
 {
 //    esp_log_level_set("*", ESP_LOG_NONE);
+
+    pibot_diag_capture_reset();
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {

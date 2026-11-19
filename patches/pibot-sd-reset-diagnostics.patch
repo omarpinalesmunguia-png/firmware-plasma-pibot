@@ -1,0 +1,34 @@
+diff --git a/fs_stream.c b/fs_stream.c
+--- a/fs_stream.c
++++ b/fs_stream.c
+@@ -40,4 +40,5 @@
+ #include "fs_stream.h"
+ #include "macros.h"
++#include "../pibot_diag.h"
+ 
+ #if FS_ENABLE & FS_SDCARD
+@@ -302,6 +303,7 @@ FLASHMEM static status_code_t list_files (bool filtered)
+ 
+ FLASHMEM static void stream_end_job (bool flush)
+ {
++    pibot_diag_job_ended();
+     file_close();
+ 
+     if(grbl.on_program_completed == onProgramCompleted)
+@@ -430,6 +432,8 @@ FLASHMEM static line_number_t onLineNumberAssigned (line_number_t line_number)
+             file.line_number = line_number;
+         else
+             line_number = file.line_number;
++
++        pibot_diag_job_progress((uint32_t)file.line_number, file.pos);
+     }
+ 
+     return on_line_number_assigned ? on_line_number_assigned(line_number) : line_number;
+@@ -611,6 +615,7 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+                     grbl.on_stream_changed = stream_changed;
+                 }
+ 
++                pibot_diag_job_started(fname, file.size);
+                 retval = Status_OK;
+             } else
+                 file.handle = NULL;
