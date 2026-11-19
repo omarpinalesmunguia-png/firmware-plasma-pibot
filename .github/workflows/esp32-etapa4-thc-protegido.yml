@@ -1,4 +1,4 @@
-name: Build PiBot Etapa 4C Seguimiento 10mm
+name: Build PiBot Etapa 5 Ejecucion Autonoma TF
 
 on:
   push:
@@ -19,6 +19,9 @@ jobs:
       - name: Aplicar correccion de reconexion WiFi
         run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
 
+      - name: Mantener trabajos de la TF aunque se pierda Telnet
+        run: git -C main/sdcard apply ../../patches/pibot-sd-autonomous-telnet.patch
+
       - name: Aplicar THC protegido y telemetria robusta
         run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4-thc-protegido.patch
 
@@ -36,13 +39,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa4c_seguimiento_10mm_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa5_autonomo_tf_merged_0x0.bin @flash_args"
 
-      - name: Publicar firmware THC con seguimiento ampliado
+      - name: Publicar firmware con ejecucion autonoma TF
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa4c_seguimiento_10mm
+          name: pibot_etapa5_autonomo_tf
           path: |
-            build/grbl_pibot_etapa4c_seguimiento_10mm_merged_0x0.bin
+            build/grbl_pibot_etapa5_autonomo_tf_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error

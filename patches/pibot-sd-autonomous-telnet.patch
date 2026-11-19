@@ -1,0 +1,32 @@
+diff --git a/fs_stream.c b/fs_stream.c
+index 46abfe7..65983c3 100644
+--- a/fs_stream.c
++++ b/fs_stream.c
+@@ -531,8 +531,10 @@ FLASHMEM static void stream_changed (void)
+ {
+     if(!stream_is_file() && file.handle != NULL) {
+ 
+-        // Reconnect from WebUI?
+-        if(webui && (hal.stream.type != StreamType_WebSocket || hal.stream.state.webui_connected)) {
++        // El archivo pertenece al controlador. Una desconexion del cliente
++        // Telnet solo cambia el canal de supervision y no debe cancelar el
++        // trabajo autonomo que ya se esta leyendo desde la tarjeta SD.
++        {
+             active_stream.set_enqueue_rt_handler(enqueue_realtime_command); // Restore previous real time handler,
+             memcpy(&active_stream, &hal.stream, sizeof(io_stream_t));       // save current stream pointers
+             stream_set_file(file.handle, read_redirected);                  // then redirect to read from file instead
+@@ -542,12 +544,11 @@ FLASHMEM static void stream_changed (void)
+             else                                                            //
+                 hal.stream.suspend_read = NULL;                             // else not
+ 
+-            if(hal.stream.type == StreamType_WebSocket)                                             // If WebUI came back online
++            if(hal.stream.type == StreamType_WebSocket && hal.stream.state.webui_connected)          // If WebUI came back online
+                 enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(drop_input_stream);    // restore normal operation
+             else                                                                                    // else
+                 enqueue_realtime_command = hal.stream.set_enqueue_rt_handler(check_input_stream);   // check for stream takeover
+-        } else // Terminate job.
+-            task_add_immediate(terminate_job, NULL);
++        }
+     }
+ 
+     if(on_stream_changed)
