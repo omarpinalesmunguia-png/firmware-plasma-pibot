@@ -45,7 +45,13 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin @flash_args &&
+            echo '=========================================' &&
+            echo '=== DECODIFICACION BACKTRACE PUTTY.LOG ===' &&
+            echo '=========================================' &&
+            (xtensa-esp32s3-elf-addr2line -pfiaC -e grbl.elf 0x42029a29 0x42029a26 0x40377e3e 0x403786c1 0x40376d09 0x420b3603 0x42003946 0x40381579 0x403832f5 0x420b3606 || true) | tee backtrace_decodificado.txt &&
+            echo '=== DESENSAMBLADO ALREDEDOR DE PC 0x42029a29 ===' &&
+            (xtensa-esp32s3-elf-objdump -d --start-address=0x420299e0 --stop-address=0x42029a60 grbl.elf || true) | tee -a backtrace_decodificado.txt"
 
       - name: Publicar firmware autonomo con diagnostico de reinicio
         uses: actions/upload-artifact@v4
@@ -54,4 +60,7 @@ jobs:
           path: |
             build/grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin
             build/grbl.bin
+            build/grbl.elf
+            build/grbl.map
+            build/backtrace_decodificado.txt
           if-no-files-found: error
