@@ -1,11 +1,21 @@
 diff --git a/thc.c b/thc.c
-index b006cf1..37187cc 100644
+index b006cf1..3bca7e0 100644
 --- a/thc.c
 +++ b/thc.c
-@@ -211,12 +211,23 @@ static status_code_t thc_host_command (char *command);
+@@ -25,6 +25,7 @@
  
- plasma_control_t cutter = {};
+ #if PLASMA_ENABLE
  
++#include <float.h>
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdint.h>
+@@ -215,8 +216,17 @@ static bool set_feed_override = false, updown_enabled = false, init_ok = false;
+ static uint8_t port_arc_ok;
+ static uint_fast8_t feed_override, segment_id = 0;
+ static float arc_vref = 0.0f, arc_voltage = 0.0f, arc_voltage_low, arc_voltage_high; //, vad_threshold;
+-static volatile float fr_actual;
+-static float fr_pgm, fr_thr_99, fr_thr_vad;
 +// Feed rates seen by the THC logic. They are computed in the foreground only
 +// (see sync_feed_rates()), never in interrupt context.
 +static float fr_actual = 0.0f, fr_pgm = 0.0f, fr_thr_99 = 0.0f, fr_thr_vad = 0.0f;
@@ -17,19 +27,10 @@ index b006cf1..37187cc 100644
 +static volatile uint32_t isr_programmed_rate_bits = 0, isr_actual_rate_bits = 0;
 +// Integer view of a float for the ISR (may_alias keeps it legal and yields a plain l32i).
 +typedef uint32_t __attribute__((may_alias)) thc_raw32_t;
-+
- static bool set_feed_override = false, updown_enabled = false, init_ok = false;
- static uint8_t port_arc_ok;
--static uint_fast8_t feed_override, segment_id = 0;
-+static uint_fast8_t feed_override;
-+static volatile uint_fast8_t segment_id = 0;
- static float arc_vref = 0.0f, arc_voltage = 0.0f, arc_voltage_low, arc_voltage_high; //, vad_threshold;
--static volatile float fr_actual;
--static float fr_pgm, fr_thr_99, fr_thr_vad;
  static thc_signals_t thc = {0};
  static pidf_t pid;
  static nvs_address_t nvs_address;
-@@ -1401,8 +1412,28 @@ static void state_thc_pid (void)
+@@ -1401,8 +1411,39 @@ static void state_thc_pid (void)
  
  /* end THC state machine */
  
@@ -44,12 +45,23 @@ index b006cf1..37187cc 100644
 +
 +// Refresh the feed rates from the raw values captured by the stepper ISR.
 +// Foreground only: this is where the floating point math is allowed.
++// Until the ISR has seen a block with a programmed rate (power up, after a reset)
++// the thresholds are set out of reach so the THC cannot report "at speed"
++// (0 >= 0 would otherwise be true) and stays locked until real motion data arrives.
 +static void sync_feed_rates (void)
 +{
++    float programmed = bits_to_float(isr_programmed_rate_bits);
++
 +    fr_actual = bits_to_float(isr_actual_rate_bits);
-+    fr_pgm = bits_to_float(isr_programmed_rate_bits) * 0.01f * sys.override.feed_rate;
-+    fr_thr_99 = fr_pgm * 0.99f;
-+    fr_thr_vad = fr_pgm * 0.01f * (float)plasma.vad_threshold;
++
++    if(programmed > 0.0f) {
++        fr_pgm = programmed * 0.01f * sys.override.feed_rate;
++        fr_thr_99 = fr_pgm * 0.99f;
++        fr_thr_vad = fr_pgm * 0.01f * (float)plasma.vad_threshold;
++    } else {
++        fr_pgm = 0.0f;
++        fr_thr_99 = fr_thr_vad = FLT_MAX;
++    }
 +}
 +
  static void exec_state_machine (void *data)
@@ -58,17 +70,19 @@ index b006cf1..37187cc 100644
      sync_z_steps();
      finish_z_release();
  
-@@ -1525,6 +1556,9 @@ static void onExecuteRealtime (uint_fast16_t state)
- static void reset (void)
+@@ -1526,6 +1567,11 @@ static void reset (void)
  {
      thc.value = 0;
-+    isr_programmed_rate_bits = isr_actual_rate_bits = 0;
-+    fr_actual = fr_pgm = fr_thr_99 = fr_thr_vad = 0.0f;
-+    segment_id = 0;
  
++    // Forget the feed rates of the previous job; the ISR publishes new ones on the first block.
++    isr_programmed_rate_bits = 0;
++    isr_actual_rate_bits = 0;
++    sync_feed_rates();
++
      task_delete(puddle_jumped, NULL);
      task_delete(thc_start, NULL);
-@@ -1642,21 +1676,20 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+     cutting_spindle = NULL;
+@@ -1642,21 +1688,20 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
      }
  }
  
