@@ -1,0 +1,99 @@
+diff --git a/thc.c b/thc.c
+index b006cf1..37187cc 100644
+--- a/thc.c
++++ b/thc.c
+@@ -211,12 +211,23 @@ static status_code_t thc_host_command (char *command);
+ 
+ plasma_control_t cutter = {};
+ 
++// Feed rates seen by the THC logic. They are computed in the foreground only
++// (see sync_feed_rates()), never in interrupt context.
++static float fr_actual = 0.0f, fr_pgm = 0.0f, fr_thr_99 = 0.0f, fr_thr_vad = 0.0f;
++// Raw IEEE-754 bits published by the stepper ISR hook. On the ESP32-S3 the FPU
++// is not available in interrupt context: any floating point instruction there
++// raises a Coprocessor exception (EXCCAUSE 4) whenever the interrupted task
++// owns no FPU context (e.g. the idle task), and silently corrupts the FPU
++// registers of the interrupted task otherwise. Keep the ISR integer-only.
++static volatile uint32_t isr_programmed_rate_bits = 0, isr_actual_rate_bits = 0;
++// Integer view of a float for the ISR (may_alias keeps it legal and yields a plain l32i).
++typedef uint32_t __attribute__((may_alias)) thc_raw32_t;
++
+ static bool set_feed_override = false, updown_enabled = false, init_ok = false;
+ static uint8_t port_arc_ok;
+-static uint_fast8_t feed_override, segment_id = 0;
++static uint_fast8_t feed_override;
++static volatile uint_fast8_t segment_id = 0;
+ static float arc_vref = 0.0f, arc_voltage = 0.0f, arc_voltage_low, arc_voltage_high; //, vad_threshold;
+-static volatile float fr_actual;
+-static float fr_pgm, fr_thr_99, fr_thr_vad;
+ static thc_signals_t thc = {0};
+ static pidf_t pid;
+ static nvs_address_t nvs_address;
+@@ -1401,8 +1412,28 @@ static void state_thc_pid (void)
+ 
+ /* end THC state machine */
+ 
++static inline float bits_to_float (uint32_t bits)
++{
++    float value;
++
++    memcpy(&value, &bits, sizeof(value));
++
++    return value;
++}
++
++// Refresh the feed rates from the raw values captured by the stepper ISR.
++// Foreground only: this is where the floating point math is allowed.
++static void sync_feed_rates (void)
++{
++    fr_actual = bits_to_float(isr_actual_rate_bits);
++    fr_pgm = bits_to_float(isr_programmed_rate_bits) * 0.01f * sys.override.feed_rate;
++    fr_thr_99 = fr_pgm * 0.99f;
++    fr_thr_vad = fr_pgm * 0.01f * (float)plasma.vad_threshold;
++}
++
+ static void exec_state_machine (void *data)
+ {
++    sync_feed_rates();
+     sync_z_steps();
+     finish_z_release();
+ 
+@@ -1525,6 +1556,9 @@ static void onExecuteRealtime (uint_fast16_t state)
+ static void reset (void)
+ {
+     thc.value = 0;
++    isr_programmed_rate_bits = isr_actual_rate_bits = 0;
++    fr_actual = fr_pgm = fr_thr_99 = fr_thr_vad = 0.0f;
++    segment_id = 0;
+ 
+     task_delete(puddle_jumped, NULL);
+     task_delete(thc_start, NULL);
+@@ -1642,21 +1676,20 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+     }
+ }
+ 
+-static void stepperPulseStart (stepper_t *stepper)
++// Stepper ISR hook (interrupt level 3, runs on every step segment).
++// It must stay in IRAM and must NOT execute any floating point instruction:
++// it only copies raw 32 bit values with integer loads/stores. The conversion
++// to float and all the math is done by sync_feed_rates() in the foreground.
++ISR_CODE static void stepperPulseStart (stepper_t *stepper)
+ {
+-//    static volatile bool get_rates = false;
+-
+     if(stepper->new_block) {
+-//        get_rates = true;
+-        fr_pgm = stepper->exec_block->programmed_rate * 0.01f * sys.override.feed_rate;
+-        fr_thr_99 = fr_pgm * 0.99f;
+-        fr_thr_vad = fr_pgm * 0.01f * (float)plasma.vad_threshold;
++        isr_programmed_rate_bits = *(const thc_raw32_t *)&stepper->exec_block->programmed_rate;
+         segment_id = 0;
+     }
+ 
+     if(stepper->exec_segment->id != segment_id) {
+         segment_id = stepper->exec_segment->id;
+-        fr_actual = stepper->exec_segment->current_rate;
++        isr_actual_rate_bits = *(const thc_raw32_t *)&stepper->exec_segment->current_rate;
+     }
+ 
+     stepper_pulse_start(stepper);

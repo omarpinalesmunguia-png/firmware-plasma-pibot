@@ -1,4 +1,4 @@
-name: Build PiBot Etapa 5C Diagnostico de Movimiento
+name: Build PiBot Etapa 5D THC sin FPU en ISR
 
 on:
   push:
@@ -34,6 +34,9 @@ jobs:
       - name: Apagar antorcha y registrar bloque si el movimiento se inmoviliza
         run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5c-motion-stall.patch
 
+      - name: Sacar la coma flotante de la ISR del stepper (corrige PANIC Coprocessor exception)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5d-isr-sin-fpu.patch
+
       - name: Hacer explicitos los fallos de lectura del MCP3221
         run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
 
@@ -45,22 +48,53 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin @flash_args &&
-            echo '=========================================' &&
-            echo '=== DECODIFICACION BACKTRACE PUTTY.LOG ===' &&
-            echo '=========================================' &&
-            (xtensa-esp32s3-elf-addr2line -pfiaC -e grbl.elf 0x42029a29 0x42029a26 0x40377e3e 0x403786c1 0x40376d09 0x420b3603 0x42003946 0x40381579 0x403832f5 0x420b3606 || true) | tee backtrace_decodificado.txt &&
-            echo '=== DESENSAMBLADO ALREDEDOR DE PC 0x42029a29 ===' &&
-            (xtensa-esp32s3-elf-objdump -d --start-address=0x420299e0 --stop-address=0x42029a60 grbl.elf || true) | tee -a backtrace_decodificado.txt"
+            -o grbl_pibot_etapa5d_isr_sin_fpu_merged_0x0.bin @flash_args"
 
-      - name: Publicar firmware autonomo con diagnostico de reinicio
+      - name: Verificar que ninguna ISR usa FPU (falla la compilacion si la usa)
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            python3 scripts/check_isr_fpu.py build/grbl.elf
+            --report build/isr_fpu_report.txt
+
+      - name: Publicar firmware (solo si paso la verificacion FPU)
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa5c_diagnostico_movimiento
+          name: pibot_etapa5d_isr_sin_fpu
           path: |
-            build/grbl_pibot_etapa5c_diagnostico_movimiento_merged_0x0.bin
+            build/grbl_pibot_etapa5d_isr_sin_fpu_merged_0x0.bin
             build/grbl.bin
+          if-no-files-found: error
+
+      - name: Registrar huella del ELF para casarla con un posible PANIC
+        if: always()
+        run: |
+          if [ -f build/grbl.elf ]; then
+            H=$(sha256sum build/grbl.elf | cut -d' ' -f1)
+            echo "ELF SHA256 completo: $H"
+            echo "ELF file SHA256 (formato del PANIC, 16 hex): ${H:0:16}"
+            {
+              echo "### Huella del ELF"
+              echo "Compararla con la linea \`ELF file SHA256\` de un PANIC: \`${H:0:16}\`"
+              echo "### Auditoria FPU en ISR"
+              echo '```'
+              cat build/isr_fpu_report.txt 2>/dev/null || echo "(sin informe)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar simbolos de depuracion (ELF, MAP e informe FPU)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pibot_etapa5d_simbolos_elf_map
+          path: |
             build/grbl.elf
             build/grbl.map
-            build/backtrace_decodificado.txt
-          if-no-files-found: error
+            build/isr_fpu_report.txt
+            build/project_description.json
+            build/flash_args
+            sdkconfig
+          if-no-files-found: warn
+          retention-days: 90
