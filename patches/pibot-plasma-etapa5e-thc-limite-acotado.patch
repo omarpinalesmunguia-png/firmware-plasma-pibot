@@ -1,0 +1,115 @@
+diff --git a/thc.c b/thc.c
+index 3bca7e0..c0d0397 100644
+--- a/thc.c
++++ b/thc.c
+@@ -61,6 +61,18 @@ extern void sheetcam_init (void);
+ #ifndef PLASMA_THC_MAX_OFFSET_MM
+ #define PLASMA_THC_MAX_OFFSET_MM        0.50f
+ #endif
++// Optional per-job tracking limit, set with (THC:PREPARE,G=..,V=..,L=<mm>).
++// L can only narrow the machine limit PLASMA_THC_MAX_OFFSET_MM, never widen it, and
++// a job that sends L also gets an absolute work-Z floor (relative to the Z0 set by the probe).
++#ifndef PLASMA_THC_LIMIT_MIN_MM
++#define PLASMA_THC_LIMIT_MIN_MM         0.50f
++#endif
++#ifndef PLASMA_THC_LIMIT_MAX_MM
++#define PLASMA_THC_LIMIT_MAX_MM         6.00f
++#endif
++#ifndef PLASMA_THC_LIMITED_Z_MIN_MM
++#define PLASMA_THC_LIMITED_Z_MIN_MM     0.80f
++#endif
+ #ifndef PLASMA_THC_MAX_STEP_MM
+ #define PLASMA_THC_MAX_STEP_MM          0.03f
+ #endif
+@@ -255,6 +267,8 @@ static int32_t motion_last_position[N_AXIS] = {0};
+ static uint32_t arc_loss_since = 0, arc_grace_ms = 0;
+ static int32_t thc_last_steps = 0;
+ static float thc_start_z = 0.0f;
++static float thc_limit_mm = PLASMA_THC_MAX_OFFSET_MM;   // symmetric tracking limit around thc_start_z
++static bool thc_limit_active = false;                    // true only when the job sent L=
+ static uint32_t material_id = PLASMA_TMP_MATERIAL_ID_START;
+ static material_t *materials = NULL;
+ static struct {
+@@ -1116,6 +1130,14 @@ static bool wait_for_z_release (void)
+     return !release_z_pending && !sys.abort;
+ }
+ 
++// Back to the machine defaults (foreground only). Called on every reset / torch off, so a
++// limit sent by one job can never leak into the next one.
++static void thc_limit_reset (void)
++{
++    thc_limit_mm = PLASMA_THC_MAX_OFFSET_MM;
++    thc_limit_active = false;
++}
++
+ static void move_thc_z (float requested)
+ {
+     float steps_per_mm = settings.axis[Z_AXIS].steps_per_mm;
+@@ -1127,8 +1149,9 @@ static void move_thc_z (float requested)
+         return;
+ 
+     float z = get_current_wpos_z();
+-    float lower = max(PLASMA_THC_Z_MIN_MM, thc_start_z - PLASMA_THC_MAX_OFFSET_MM);
+-    float upper = thc_start_z + PLASMA_THC_MAX_OFFSET_MM;
++    float z_floor = thc_limit_active ? max(PLASMA_THC_Z_MIN_MM, PLASMA_THC_LIMITED_Z_MIN_MM) : PLASMA_THC_Z_MIN_MM;
++    float lower = max(z_floor, thc_start_z - thc_limit_mm);
++    float upper = thc_start_z + thc_limit_mm;
+     float available = requested < 0.0f ? z - lower : upper - z;
+     float steps = floorf(min(min(fabsf(requested), PLASMA_THC_MAX_STEP_MM), available) * steps_per_mm);
+ 
+@@ -1171,7 +1194,8 @@ static status_code_t thc_host_command (char *command)
+ 
+     if(!strncmp(command, "PREPARE,", 8)) {
+         uint_fast8_t pos = 8;
+-        float grace, voltage = 0.0f;
++        float grace, voltage = 0.0f, limit = 0.0f;
++        bool has_limit = false;
+         if(cutting_spindle || state_get() != STATE_IDLE || strncmp(command + pos, "G=", 2))
+             return Status_GcodeUnsupportedCommand;
+         pos += 2;
+@@ -1181,12 +1205,28 @@ static status_code_t thc_host_command (char *command)
+             if(strncmp(command + pos, ",V=", 3))
+                 return Status_GcodeValueOutOfRange;
+             pos += 3;
+-            if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f || command[pos])
++            if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f)
+                 return Status_GcodeValueOutOfRange;
++            if(command[pos]) {
++                if(strncmp(command + pos, ",L=", 3))
++                    return Status_GcodeValueOutOfRange;
++                pos += 3;
++                if(!read_float(command, &pos, &limit) || command[pos] ||
++                    limit < PLASMA_THC_LIMIT_MIN_MM || limit > min(PLASMA_THC_LIMIT_MAX_MM, PLASMA_THC_MAX_OFFSET_MM))
++                    return Status_GcodeValueOutOfRange;
++                has_limit = true;
++            }
+         }
+         if(voltage == 0.0f || !plasma.option.sync_pos || mode != Plasma_ModeVoltage)
+             return Status_SettingDisabled;
+ 
++        // Everything validated: only now change the tracking limit.
++        if(has_limit) {
++            thc_limit_mm = limit;
++            thc_limit_active = true;
++        } else
++            thc_limit_reset();
++
+         host_managed = waiting_for_cut_height = true;
+         floating_head_collision = false;
+         floating_head_samples = 0;
+@@ -1578,6 +1618,7 @@ static void reset (void)
+     host_managed = waiting_for_cut_height = arc_lost = false;
+     floating_head_collision = false;
+     floating_head_samples = 0;
++    thc_limit_reset();
+     motion_stall_reported = false;
+     motion_last_progress = hal.get_elapsed_ticks();
+     arc_grace_ms = 0;
+@@ -1608,6 +1649,7 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
+         host_managed = waiting_for_cut_height = arc_lost = false;
+         floating_head_collision = false;
+         floating_head_samples = 0;
++        thc_limit_reset();
+         motion_stall_reported = false;
+         motion_last_progress = hal.get_elapsed_ticks();
+         arc_grace_ms = 0;
