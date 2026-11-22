@@ -1,4 +1,4 @@
-name: Build PiBot Etapa 5D THC sin FPU en ISR
+name: Build PiBot Etapa 5E THC con limite acotado (incluye 5D sin FPU en ISR)
 
 on:
   push:
@@ -37,6 +37,9 @@ jobs:
       - name: Sacar la coma flotante de la ISR del stepper (corrige PANIC Coprocessor exception)
         run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5d-isr-sin-fpu.patch
 
+      - name: Agregar limite acotado opcional L= al THC (sin L= no cambia nada)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5e-thc-limite-acotado.patch
+
       - name: Hacer explicitos los fallos de lectura del MCP3221
         run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
 
@@ -48,7 +51,7 @@ jobs:
             sh -c "idf.py set-target esp32s3 && idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin
-            -o grbl_pibot_etapa5d_isr_sin_fpu_merged_0x0.bin @flash_args"
+            -o grbl_pibot_etapa5e_thc_limite_merged_0x0.bin @flash_args"
 
       - name: Verificar que ninguna ISR usa FPU (falla la compilacion si la usa)
         uses: docker://espressif/idf:release-v4.4
@@ -61,9 +64,9 @@ jobs:
       - name: Publicar firmware (solo si paso la verificacion FPU)
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa5d_isr_sin_fpu
+          name: pibot_etapa5e_thc_limite
           path: |
-            build/grbl_pibot_etapa5d_isr_sin_fpu_merged_0x0.bin
+            build/grbl_pibot_etapa5e_thc_limite_merged_0x0.bin
             build/grbl.bin
           if-no-files-found: error
 
@@ -88,7 +91,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pibot_etapa5d_simbolos_elf_map
+          name: pibot_etapa5e_simbolos_elf_map
           path: |
             build/grbl.elf
             build/grbl.map
