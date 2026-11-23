@@ -7,6 +7,9 @@ OPTION(BOARD_BLACKBOX_X32 "Compile for BlackBox X32" OFF)
 # PiBot V5.88 plasma build core options, set to OFF for a stock build
 OPTION(PIBOT_PLASMA "PiBot plasma build core options" ON)
 
+# ESP32-WROOM-32U plasma build (target esp32, 4 MB, no SD card). See BUILD_ESP32U_PLASMA.md.
+OPTION(ESP32U_PLASMA "ESP32-WROOM-32U plasma build" OFF)
+
 # WiFi vs. Ethernet support
  # Do not enable unless having a board that supports it!
 OPTION(Ethernet "Compile with Ethernet support" OFF)
@@ -307,8 +310,17 @@ target_compile_definitions("${COMPONENT_LIB}" PUBLIC LWIP_HTTPD_DYNAMIC_FILE_REA
 
 # PiBot V5.88 plasma build (see PIBOT_PLASMA_BUILD in my_machine.h).
 # Core (grbl/) options are not read from my_machine.h, they must be set here.
-if(PIBOT_PLASMA)
+if(PIBOT_PLASMA OR ESP32U_PLASMA)
 target_compile_definitions("${COMPONENT_LIB}" PUBLIC NGC_EXPRESSIONS_ENABLE=1)
+endif()
+
+# ESP32-WROOM-32U plasma build: selects the board block in my_machine.h.
+if(ESP32U_PLASMA)
+idf_build_get_property(esp32u_idf_target IDF_TARGET)
+if(NOT "${esp32u_idf_target}" STREQUAL "esp32")
+message(FATAL_ERROR "ESP32U_PLASMA requires target esp32 (idf.py set-target esp32)")
+endif()
+target_compile_definitions("${COMPONENT_LIB}" PUBLIC ESP32U_PLASMA_BUILD=1)
 endif()
 
 if(BOARD_BLACKBOX_X32)
@@ -328,6 +340,7 @@ target_add_binary_data("${COMPONENT_LIB}" "embedded/index.html.gz" BINARY)
 unset(BOARD_BLACKBOX_X32 CACHE)
 unset(Ethernet CACHE)
 unset(PIBOT_PLASMA CACHE)
+unset(ESP32U_PLASMA CACHE)
 unset(AddMyPlugin CACHE)
 
 #target_compile_options("${COMPONENT_LIB}" PRIVATE -Werror -Wall -Wextra -Wmissing-field-initializers)

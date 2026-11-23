@@ -168,6 +168,8 @@ typedef struct {
   #include "boards/pibot_5_88_ultra_map.h"
 #elif defined(BOARD_PIBOT_5_88_PLASMA)
   #include "boards/pibot_5_88_plasma_map.h"
+#elif defined(BOARD_ESP32U_PLASMA)
+  #include "boards/esp32u_plasma_map.h"
 #elif defined(BOARD_BLACKBOX_X32)
   #include "boards/BlackBoxX32_map.h"
 #elif defined(BOARD_ROOTCNC_V2)

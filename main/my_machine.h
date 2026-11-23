@@ -39,6 +39,7 @@
 //#define BOARD_OOZNEST_CNC                         // Has a ESP32-S3 MCU
 //#define BOARD_PIBOT_I2S_6_AXIS        			// PiBot 6-axis I2S board
 //#define BOARD_PIBOT_5_88_ULTRA        			// Has a ESP32-S3 MCU
+//#define BOARD_ESP32U_PLASMA           			// ESP32-WROOM-32U plasma, select with -DESP32U_PLASMA=ON (see below)
 //#define BOARD_PROTONEER_3XX           			//
 //#define BOARD_ROOTCNC_PRO             			//
 //#define BOARD_ROOTCNC_V2              			//
@@ -51,9 +52,48 @@
 //#define BOARD_MY_MACHINE              			// Add my_machine_map.h in the boards directory before enabling this!
 
 // ---------------------------------------------------------------------------------------
+// Plasma cutter builds. Two machines share this firmware and the PlasmaPibotLimpio PC program:
+//  - PiBot V5.88 Ultra (ESP32-S3, TF card)            -> default build, target esp32s3.
+//  - ESP32-WROOM-32U, 4 MB, G-code in internal flash  -> build with -DESP32U_PLASMA=ON,
+//    target esp32 (see BUILD_ESP32U_PLASMA.md). CMakeLists.txt sets ESP32U_PLASMA_BUILD.
+#if defined(ESP32U_PLASMA_BUILD) && ESP32U_PLASMA_BUILD
+
+#define BOARD_ESP32U_PLASMA                // boards/esp32u_plasma_map.h, classic ESP32 target
+#define PLASMA_ENABLE           1          // Plasma/THC plugin (main/plasma). Forces step injection for Z.
+#define SPINDLE0_ENABLE         SPINDLE_ONOFF0 // Torch on/off = spindle enable (M3/M5).
+#define MCP3221_ENABLE          1          // Arc voltage ADC on I2C (GPIO21/22).
+#define I2C_ENABLE              1
+#define ESTOP_ENABLE            1          // Mushroom button -> E-stop state (needs reset + $X to clear).
+#define PROBE_ENABLE            1          // Floating head (and ohmic via relay) on the probe input.
+
+// No SD card: LittleFS in the internal flash is mounted as root ("/"), so FTP uploads and
+// $F=/pibot_trabajo.nc work exactly as on the PiBot. Storage partition: partitions_esp32u_4m.csv.
+#define SDCARD_ENABLE           0
+#ifdef LITTLEFS_ENABLE
+#undef LITTLEFS_ENABLE                     // CMakeLists.txt defines LITTLEFS_ENABLE=1
+#endif
+#define LITTLEFS_ENABLE         2
+
+#define WIFI_ENABLE             1
+#define WIFI_SOFTAP             1          // Enables Access Point and Access Point/Station modes ($73).
+#define TELNET_ENABLE           1          // PlasmaPibotLimpio / ioSender over WiFi (port 23).
+#define FTP_ENABLE              1          // Upload G-code to internal flash by FTP (port 21).
+// WebUI is left out: it is not needed by PlasmaPibotLimpio and saves flash/RAM on the classic ESP32.
+#define NETWORK_AP_SSID         "ESP32U_Plasma"
+#define NETWORK_AP_PASSWORD     "plasma1234" // min. 8 characters, change with $77
+#define NETWORK_AP_HOSTNAME     "esp32u-plasma"
+#define NETWORK_STA_HOSTNAME    "esp32u-plasma"
+
+#define FS_STREAM_KEEP_JOB      1          // A file job keeps running if the WiFi client disconnects.
+#define NETWORK_NONBLOCKING_FILE_JOB 1     // A dead WiFi client can no longer block the controller.
+
+#else
+
 // PiBot V5.88 Ultra - plasma cutter configuration.
 // Comment out the next line to go back to the stock configuration below.
 #define PIBOT_PLASMA_BUILD 1
+
+#endif
 
 #if PIBOT_PLASMA_BUILD
 #define BOARD_PIBOT_5_88_PLASMA            // boards/pibot_5_88_plasma_map.h, ESP32-S3 target
