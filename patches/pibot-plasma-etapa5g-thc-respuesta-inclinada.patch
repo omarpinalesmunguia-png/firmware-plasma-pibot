@@ -1,0 +1,91 @@
+diff --git a/thc.c b/thc.c
+index b49e54f..9f16ed7 100644
+--- a/thc.c
++++ b/thc.c
+@@ -77,6 +77,17 @@ extern void sheetcam_init (void);
+ #ifndef PLASMA_THC_MAX_STEP_MM
+ #define PLASMA_THC_MAX_STEP_MM          0.03f
+ #endif
++// 5G: proportional correction step = |error V| x gain, clamped to [MIN_STEP, MAX_STEP]
++// (MAX_STEP_DOWN for downward moves). At 25 Hz sampling 0.15 mm/sample = 225 mm/min max.
++#ifndef PLASMA_THC_GAIN_MM_PER_V
++#define PLASMA_THC_GAIN_MM_PER_V        0.02f
++#endif
++#ifndef PLASMA_THC_MIN_STEP_MM
++#define PLASMA_THC_MIN_STEP_MM          0.03f
++#endif
++#ifndef PLASMA_THC_MAX_STEP_DOWN_MM
++#define PLASMA_THC_MAX_STEP_DOWN_MM     PLASMA_THC_MAX_STEP_MM
++#endif
+ #ifndef PLASMA_THC_MAX_FEED_MM_MIN
+ #define PLASMA_THC_MAX_FEED_MM_MIN      30.0f
+ #endif
+@@ -1030,16 +1041,26 @@ static bool get_filtered_control_voltage (float *filtered)
+ 
+     control_sample_id = arc_voltage_sample_id;
+ 
++    // 5G: asymmetric protection. A voltage far ABOVE target (kerf crossing, hole, plate
++    // edge, arc stretching) would drive the torch down: freeze. A voltage far BELOW
++    // target means the torch is too close (plate rising, warp): never freeze, the
++    // correction is upwards, which is the safe direction (still bounded by +L).
+     if(!arc_voltage_valid || !isfinite(arc_voltage) ||
+        arc_voltage < PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE ||
+-       fabsf(arc_voltage - arc_vref) > PLASMA_THC_MAX_CONTROL_ERROR_V) {
++       arc_voltage - arc_vref > PLASMA_THC_MAX_CONTROL_ERROR_V) {
+         thc.void_lock = On;
+         return false;
+     }
+ 
++    if(arc_vref - arc_voltage > PLASMA_THC_MAX_CONTROL_ERROR_V) {
++        thc.void_lock = Off;
++        *filtered = arc_voltage;   // too close: react at once, no filter delay
++        return true;
++    }
++
+     if(control_sample_count == THC_SAMPLE_AVG) {
+         float median = median_control_voltage();
+-        if(fabsf(arc_voltage - median) > PLASMA_THC_OUTLIER_DELTA_V) {
++        if(arc_voltage - median > PLASMA_THC_OUTLIER_DELTA_V) { // upward spike only
+             thc.void_lock = On;
+             return false;
+         }
+@@ -1155,11 +1176,14 @@ static void move_thc_z (float requested)
+         return;
+ 
+     float z = get_current_wpos_z();
+-    float z_floor = thc_limit_active ? max(PLASMA_THC_Z_MIN_MM, PLASMA_THC_LIMITED_Z_MIN_MM) : PLASMA_THC_Z_MIN_MM;
++    // 5G: no absolute floor at the probed Z0 when L is given: on an inclined plate the
++    // torch must be able to follow the plate below the starting surface. The bound is
++    // thc_start_z - L (and the machine minimum PLASMA_THC_Z_MIN_MM).
++    float z_floor = PLASMA_THC_Z_MIN_MM;
+     float lower = max(z_floor, thc_start_z - thc_limit_mm);
+     float upper = thc_start_z + thc_limit_mm;
+     float available = requested < 0.0f ? z - lower : upper - z;
+-    float steps = floorf(min(min(fabsf(requested), PLASMA_THC_MAX_STEP_MM), available) * steps_per_mm);
++    float steps = floorf(min(fabsf(requested), available) * steps_per_mm);
+ 
+     if(steps < 1.0f) {
+         thc.velocity_lock = On;
+@@ -1210,7 +1234,7 @@ static void thc_leadout (void)
+ static status_code_t thc_host_command (char *command)
+ {
+     if(!strcmp(command, "INFO")) {
+-        report_message("THC control 2", Message_Plain); // 2: PREPARE sin V=, LEADOUT sincronizado con el movimiento (5F)
++        report_message("THC control 3", Message_Plain); // 2: PREPARE sin V=, LEADOUT sincronizado (5F); 3: respuesta proporcional, bloqueo asimetrico, L hasta 12 mm (5G)
+         return Status_OK;
+     }
+ 
+@@ -1516,7 +1540,12 @@ static void state_thc_pid (void)
+         return;
+     }
+ 
+-    float requested = filtered < arc_voltage_low ? PLASMA_THC_MAX_STEP_MM : -PLASMA_THC_MAX_STEP_MM;
++    // 5G: proportional step, bigger error -> bigger correction per sample.
++    float error = arc_vref - filtered; // > 0: too close -> up
++    float step = fabsf(error) * PLASMA_THC_GAIN_MM_PER_V;
++    step = max(step, PLASMA_THC_MIN_STEP_MM);
++    step = min(step, error > 0.0f ? PLASMA_THC_MAX_STEP_MM : PLASMA_THC_MAX_STEP_DOWN_MM);
++    float requested = error > 0.0f ? step : -step;
+     plasma_thc_t direction = requested > 0.0f ? THC_Up : THC_Down;
+ 
+     if(st2_motor_running(z_motor)) {

@@ -69,10 +69,15 @@
 #define PLASMA_VOLTAGE_MONITOR_MAX_FAILURES 3
 #define PLASMA_VOLTAGE_MONITOR_RETRY_TICKS 1000
 #define PLASMA_PROTECTED_THC_ENABLE PIBOT_PROTECTED_THC_ENABLE
-#define PLASMA_THC_Z_MIN_MM -10.0f
-#define PLASMA_THC_MAX_OFFSET_MM 10.0f
-#define PLASMA_THC_MAX_STEP_MM 0.03f
-#define PLASMA_THC_MAX_FEED_MM_MIN 50.0f
+// 5G: respuesta y acotamiento para lamina inclinada/deformada (hasta ~10 mm) sin mapa.
+#define PLASMA_THC_Z_MIN_MM -12.0f          // minimo absoluto de Z de trabajo para el THC
+#define PLASMA_THC_MAX_OFFSET_MM 12.0f      // L maximo que acepta la maquina
+#define PLASMA_THC_LIMIT_MAX_MM 12.0f       // (THC:PREPARE,...,L=) hasta 12 mm
+#define PLASMA_THC_GAIN_MM_PER_V 0.02f      // paso proporcional: 0.02 mm por volt de error
+#define PLASMA_THC_MIN_STEP_MM 0.03f
+#define PLASMA_THC_MAX_STEP_MM 0.15f        // subir: 0.15 mm/muestra a 25 Hz = 225 mm/min
+#define PLASMA_THC_MAX_STEP_DOWN_MM 0.10f   // bajar: 0.10 mm/muestra = 150 mm/min (mas prudente)
+#define PLASMA_THC_MAX_FEED_MM_MIN 250.0f   // tope de velocidad del motor Z en correccion
 #define PLASMA_THC_OUTLIER_DELTA_V 15.0f
 #define PLASMA_THC_MAX_CONTROL_ERROR_V 20.0f
 #else
