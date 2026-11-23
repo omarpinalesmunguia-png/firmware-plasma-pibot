@@ -1,0 +1,181 @@
+diff --git a/thc.c b/thc.c
+index c0d0397..b49e54f 100644
+--- a/thc.c
++++ b/thc.c
+@@ -31,6 +31,7 @@
+ #include <stdint.h>
+ #include <stdbool.h>
+ #include <string.h>
++#include <stdlib.h>
+ 
+ #include "grbl/config.h"
+ #include "grbl/hal.h"
+@@ -295,6 +296,11 @@ static on_spindle_selected_ptr on_spindle_selected;
+ static on_execute_realtime_ptr on_execute_realtime = NULL;
+ static on_realtime_report_ptr on_realtime_report = NULL;
+ static on_gcode_message_ptr on_gcode_comment;
++static on_gcode_message_ptr on_gcode_message;                  // 5F
++static on_process_gcode_comment_ptr on_process_gcode_comment;  // 5F
++
++// 5F: marker attached to the planner block of a "G1 ... (THC:LEADOUT)" line.
++#define THC_LEADOUT_MARKER "\x01THC:LEADOUT"
+ static on_program_completed_ptr on_program_completed;
+ static user_mcode_ptrs_t user_mcode;
+ 
+@@ -1185,10 +1191,26 @@ static void pause_on_error (void)
+     system_set_exec_state_flag(EXEC_FEED_HOLD);
+ }
+ 
++// 5F: lead-out. Freezes Z where it is and stops THC corrections, arc ok supervision stays.
++// Runs in the foreground: never from an ISR (no FPU restrictions), never blocks, never
++// returns an error (an error would end a TF job with the torch on).
++static void thc_leadout (void)
++{
++    if(!host_managed || !cutting_spindle)
++        return;
++
++    task_delete(thc_start, NULL);
++    waiting_for_cut_height = false;
++    job.thc_disabled = true;
++    thc.enabled = thc.active = thc.void_lock = Off;
++    release_z();    // finish_z_release() completes it from the state machine
++    stateHandler = state_arc_monitor;
++}
++
+ static status_code_t thc_host_command (char *command)
+ {
+     if(!strcmp(command, "INFO")) {
+-        report_message("THC control 1", Message_Plain);
++        report_message("THC control 2", Message_Plain); // 2: PREPARE sin V=, LEADOUT sincronizado con el movimiento (5F)
+         return Status_OK;
+     }
+ 
+@@ -1196,7 +1218,7 @@ static status_code_t thc_host_command (char *command)
+         uint_fast8_t pos = 8;
+         float grace, voltage = 0.0f, limit = 0.0f;
+         bool has_limit = false;
+-        if(cutting_spindle || state_get() != STATE_IDLE || strncmp(command + pos, "G=", 2))
++        if(cutting_spindle || strncmp(command + pos, "G=", 2))
+             return Status_GcodeUnsupportedCommand;
+         pos += 2;
+         if(!read_float(command, &pos, &grace) || grace < 0.0f || grace > 4000.0f)
+@@ -1217,9 +1239,29 @@ static status_code_t thc_host_command (char *command)
+                 has_limit = true;
+             }
+         }
+-        if(voltage == 0.0f || !plasma.option.sync_pos || mode != Plasma_ModeVoltage)
++        if(voltage != 0.0f && (!plasma.option.sync_pos || mode != Plasma_ModeVoltage))
+             return Status_SettingDisabled;
+ 
++        // 5F: in a file job the preceding moves may still be queued with the cycle not yet
++        // started; checking the state before synchronizing depended on planner timing.
++        if(!protocol_buffer_synchronize() || cutting_spindle || state_get() != STATE_IDLE)
++            return Status_GcodeUnsupportedCommand;
++
++        // 5F: (THC:PREPARE,G=<ms>) without V= -> cut managed by the host WITHOUT THC
++        // (fixed height, 3D height map, small contours): Z is never claimed, so the
++        // programmed Z moves of a height map are executed, and arc ok gets its grace time.
++        if(voltage == 0.0f) {
++            thc_limit_reset();
++            host_managed = true;
++            waiting_for_cut_height = false;
++            floating_head_collision = false;
++            floating_head_samples = 0;
++            arc_grace_ms = (uint32_t)grace;
++            job.thc_disabled = true;
++            job.arc_ok_ignore = false;
++            return Status_OK;
++        }
++
+         // Everything validated: only now change the tracking limit.
+         if(has_limit) {
+             thc_limit_mm = limit;
+@@ -1239,8 +1281,9 @@ static status_code_t thc_host_command (char *command)
+     }
+ 
+     if(!strcmp(command, "READY")) {
+-        if(!host_managed || !waiting_for_cut_height || !cutting_spindle || state_get() != STATE_IDLE || release_z_pending)
++        if(!host_managed || !waiting_for_cut_height || !cutting_spindle || release_z_pending)
+             return Status_GcodeUnsupportedCommand;
++        // 5F: synchronize first (move to cut height finishes), then check the state.
+         if(!protocol_buffer_synchronize() || !cutting_spindle || state_get() != STATE_IDLE)
+             return Status_GcodeUnsupportedCommand;
+         waiting_for_cut_height = false;
+@@ -1249,10 +1292,14 @@ static status_code_t thc_host_command (char *command)
+         return Status_OK;
+     }
+ 
+-    if(!strcmp(command, "OFF") || !strcmp(command, "LEADOUT")) {
+-        bool leadout = !strcmp(command, "LEADOUT");
+-        if(leadout && (!host_managed || !cutting_spindle || state_get() != STATE_IDLE))
+-            return Status_GcodeUnsupportedCommand;
++    if(!strcmp(command, "LEADOUT")) {
++        // Stand-alone line (no motion on it): applied at once. On a motion line it is
++        // handled by onProcessGcodeComment()/onGcodeMessage() when that block starts.
++        thc_leadout();
++        return Status_OK;
++    }
++
++    if(!strcmp(command, "OFF")) {
+         task_delete(thc_start, NULL);
+         waiting_for_cut_height = false;
+         job.thc_disabled = true;
+@@ -1310,6 +1357,36 @@ static void thc_start (void *data)
+     }
+ }
+ 
++// 5F: (THC:LEADOUT) on a motion line. Returning a message attaches it to that planner
++// block; grblHAL outputs block messages through grbl.on_gcode_message (foreground task)
++// when the block starts executing, so the lead-out is applied exactly at the start of the
++// lead-out move. On a line without motion the message is output at once.
++static char *onProcessGcodeComment (char *comment)
++{
++    if(comment && !strcmp(comment, "THC:LEADOUT")) {
++        char *marker = malloc(sizeof(THC_LEADOUT_MARKER));
++        if(marker) {
++            strcpy(marker, THC_LEADOUT_MARKER);
++            *comment = '\0'; // do not raise grbl.on_gcode_comment for it
++            return marker;
++        }
++        // Out of memory: falls through to the immediate (stand-alone) handling.
++    }
++
++    return on_process_gcode_comment ? on_process_gcode_comment(comment) : NULL;
++}
++
++static status_code_t onGcodeMessage (char *msg)
++{
++    if(msg && !strcmp(msg, THC_LEADOUT_MARKER)) {
++        thc_leadout();
++        *msg = '\0'; // no [MSG:] output
++        return Status_OK;
++    }
++
++    return on_gcode_message ? on_gcode_message(msg) : Status_OK;
++}
++
+ static void puddle_jumped (void *data)
+ {
+     hal.stepper.claim_motor(Z_AXIS, true);
+@@ -1813,7 +1890,7 @@ static void onProgramCompleted (program_flow_t program_flow, bool check_mode)
+ 
+ static void onRealtimeReport (stream_write_ptr stream_write, report_tracking_flags_t report)
+ {
+-    static char buf[24];
++    static char buf[40];
+ 
+     strcpy(buf, "|THC:");
+     strcat(buf, ftoa(arc_voltage, 1));
+@@ -2314,6 +2391,12 @@ void plasma_init (void)
+         on_gcode_comment = grbl.on_gcode_comment;
+         grbl.on_gcode_comment = onGcodeComment;
+ 
++        // 5F: (THC:LEADOUT) synchronized with motion.
++        on_process_gcode_comment = grbl.on_process_gcode_comment;
++        grbl.on_process_gcode_comment = onProcessGcodeComment;
++        on_gcode_message = grbl.on_gcode_message;
++        grbl.on_gcode_message = onGcodeMessage;
++
+ /*
+         control_interrupt_callback = hal.control_interrupt_callback;
+         hal.control_interrupt_callback = trap_control_interrupts;
