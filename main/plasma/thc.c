@@ -55,6 +55,12 @@ extern void sheetcam_init (void);
 #define THC_MAX_STEP_MM                 0.08f
 #define THC_MIN_OFFSET_MM              -1.30f
 #define THC_MAX_OFFSET_MM               2.50f
+#define THC_LIMIT_MIN_MM                0.5f   // (THC:PREPARE,...,L=) range
+#define THC_LIMIT_MAX_MM                6.0f
+#define THC_MIN_VALID_VOLTAGE           40.0f  // below this with arc ok the reading is treated as invalid -> hold Z
+#define THC_PROTOCOL_VERSION            "2"    // 2: PREPARE ,L=; LEADOUT synchronized with motion
+// Marker attached to a planner block by (THC:LEADOUT) so that it executes when that block starts moving.
+#define THC_LEADOUT_MARKER              "\x01THC:LEADOUT"
 // Digital ports
 #define PLASMA_THC_DISABLE_PORT         2 // output
 #define PLASMA_TORCH_DISABLE_PORT       3 // output
@@ -199,6 +205,8 @@ static on_spindle_selected_ptr on_spindle_selected;
 static on_execute_realtime_ptr on_execute_realtime = NULL;
 static on_realtime_report_ptr on_realtime_report = NULL;
 static on_gcode_message_ptr on_gcode_comment;
+static on_gcode_message_ptr on_gcode_message;
+static on_process_gcode_comment_ptr on_process_gcode_comment;
 static user_mcode_ptrs_t user_mcode;
 
 static const char params[] = "ph,pd,fr,ch,cv,pe,jh,jd,kw,ca,gp,cm,nu,na,th"; // NOTE: must match layout of material_t
@@ -780,6 +788,7 @@ static spindle_ptrs_t *cutting_spindle = NULL;
 static bool host_managed, waiting_for_cut_height, arc_lost, z_claimed, release_z_pending;
 static uint32_t arc_loss_since, arc_grace_ms;
 static float thc_start_z;
+static float thc_min_offset_mm = THC_MIN_OFFSET_MM, thc_max_offset_mm = THC_MAX_OFFSET_MM;
 
 static inline void sync_z_steps (void)
 {
@@ -888,17 +897,35 @@ static void thc_start (void *data)
     }
 }
 
+// Lead-out: freeze Z where it is and stop THC corrections, keep arc ok supervision.
+// Called from the foreground, either when the planner block that carries the lead-out marker
+// starts executing (file/TF jobs) or immediately for a stand-alone (THC:LEADOUT) line.
+// Never returns an error so that it cannot abort a running file job.
+static void thc_leadout (void)
+{
+    if(!host_managed || !cutting_spindle)
+        return;
+
+    task_delete(thc_start, NULL);
+    waiting_for_cut_height = false;
+    job.thc_disabled = true;
+    thc.enabled = thc.active = thc.void_lock = Off;
+    release_z();    // stops the Z motor, finish_z_release() completes it from exec_state_machine
+    stateHandler = state_arc_monitor;
+}
+
 static status_code_t thc_host_command (char *command)
 {
     if(!strcmp(command, "INFO")) {
-        report_message("THC control 1", Message_Plain);
+        report_message("THC control " THC_PROTOCOL_VERSION, Message_Plain);
         return Status_OK;
     }
 
     if(!strncmp(command, "PREPARE,", 8)) {
         uint_fast8_t pos = 8;
-        float grace, voltage = 0.0f;
-        if(cutting_spindle || state_get() != STATE_IDLE || strncmp(command + pos, "G=", 2))
+        float grace, voltage = 0.0f, limit = 0.0f;
+        bool has_limit = false;
+        if(cutting_spindle || strncmp(command + pos, "G=", 2))
             return Status_GcodeUnsupportedCommand;
         pos += 2;
         if(!read_float(command, &pos, &grace) || grace < 0.0f || grace > 4000.0f)
@@ -907,17 +934,31 @@ static status_code_t thc_host_command (char *command)
             if(strncmp(command + pos, ",V=", 3))
                 return Status_GcodeValueOutOfRange;
             pos += 3;
-            if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f || command[pos])
+            if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f)
                 return Status_GcodeValueOutOfRange;
+            if(command[pos]) {
+                if(strncmp(command + pos, ",L=", 3))
+                    return Status_GcodeValueOutOfRange;
+                pos += 3;
+                if(!read_float(command, &pos, &limit) || limit < THC_LIMIT_MIN_MM || limit > THC_LIMIT_MAX_MM || command[pos])
+                    return Status_GcodeValueOutOfRange;
+                has_limit = true;
+            }
         }
         if(voltage && (!plasma.option.sync_pos || mode == Plasma_ModeOff || mode == Plasma_ModeArcOK))
             return Status_SettingDisabled;
+        // Synchronize first: in a file job the previous moves may still be queued (cycle not started),
+        // checking the state before synchronizing depends on planner timing.
+        if(!protocol_buffer_synchronize() || cutting_spindle || state_get() != STATE_IDLE)
+            return Status_GcodeUnsupportedCommand;
 
         host_managed = true;
         waiting_for_cut_height = voltage > 0.0f;
         arc_grace_ms = (uint32_t)grace;
         job.thc_disabled = !waiting_for_cut_height;
         job.arc_ok_ignore = false;
+        thc_min_offset_mm = has_limit ? -limit : THC_MIN_OFFSET_MM;
+        thc_max_offset_mm = has_limit ? limit : THC_MAX_OFFSET_MM;
         if(waiting_for_cut_height) {
             job.cut_voltage = voltage;
             set_target_voltage(voltage);
@@ -926,8 +967,9 @@ static status_code_t thc_host_command (char *command)
     }
 
     if(!strcmp(command, "READY")) {
-        if(!host_managed || !waiting_for_cut_height || !cutting_spindle || state_get() != STATE_IDLE || release_z_pending)
+        if(!host_managed || !waiting_for_cut_height || !cutting_spindle || release_z_pending)
             return Status_GcodeUnsupportedCommand;
+        // Wait until the move to cut height has finished, then arm the THC.
         if(!protocol_buffer_synchronize() || !cutting_spindle || state_get() != STATE_IDLE)
             return Status_GcodeUnsupportedCommand;
         waiting_for_cut_height = false;
@@ -936,14 +978,18 @@ static status_code_t thc_host_command (char *command)
         return Status_OK;
     }
 
-    if(!strcmp(command, "OFF") || !strcmp(command, "LEADOUT")) {
-        bool leadout = !strcmp(command, "LEADOUT");
-        if(leadout && (!host_managed || !cutting_spindle || state_get() != STATE_IDLE))
-            return Status_GcodeUnsupportedCommand;
+    if(!strcmp(command, "LEADOUT")) {
+        // Only reached for lines without motion when on_process_gcode_comment was not called;
+        // normally handled by onProcessGcodeComment()/onGcodeMessage().
+        thc_leadout();
+        return Status_OK;
+    }
+
+    if(!strcmp(command, "OFF")) {
         task_delete(thc_start, NULL);
         waiting_for_cut_height = false;
         job.thc_disabled = true;
-        job.arc_ok_ignore = !host_managed && !leadout;
+        job.arc_ok_ignore = !host_managed;
         thc.enabled = thc.active = thc.void_lock = Off;
         release_z();
         stateHandler = cutting_spindle ? state_arc_monitor : state_await_idle;
@@ -974,6 +1020,35 @@ static status_code_t thc_host_command (char *command)
             thc_start(NULL);
     }
     return Status_OK;
+}
+
+// (THC:LEADOUT) on a motion line: attach a marker message to that planner block,
+// grblHAL outputs block messages via grbl.on_gcode_message when the block starts executing.
+// On a line without motion the message is output at once (same as the old behaviour).
+static char *onProcessGcodeComment (char *comment)
+{
+    if(comment && !strcmp(comment, "THC:LEADOUT")) {
+        char *marker = malloc(sizeof(THC_LEADOUT_MARKER));
+        if(marker) {
+            strcpy(marker, THC_LEADOUT_MARKER);
+            *comment = '\0'; // do not raise grbl.on_gcode_comment
+            return marker;
+        }
+        // Out of memory: fall through, handled as an immediate comment command.
+    }
+
+    return on_process_gcode_comment ? on_process_gcode_comment(comment) : NULL;
+}
+
+static status_code_t onGcodeMessage (char *msg)
+{
+    if(msg && !strcmp(msg, THC_LEADOUT_MARKER)) {
+        thc_leadout();
+        *msg = '\0'; // suppress [MSG:] output
+        return Status_OK;
+    }
+
+    return on_gcode_message ? on_gcode_message(msg) : Status_OK;
 }
 
 static void puddle_jumped (void *data)
@@ -1051,8 +1126,8 @@ static void move_thc_z (float requested)
         return;
 
     float z = get_current_wpos_z();
-    float lower = max(THC_Z_MIN_MM, thc_start_z + THC_MIN_OFFSET_MM);
-    float upper = thc_start_z + THC_MAX_OFFSET_MM;
+    float lower = max(THC_Z_MIN_MM, thc_start_z + thc_min_offset_mm);
+    float upper = thc_start_z + thc_max_offset_mm;
     float available = requested < 0.0f ? z - lower : upper - z;
     // Round toward zero in motor steps so quantization cannot cross the limit.
     float steps = floorf(min(min(fabsf(requested), THC_MAX_STEP_MM), available) * spm);
@@ -1116,9 +1191,12 @@ static void state_thc_pid (void)
 
     arc_voltage = voltage_sum / (float)THC_SAMPLE_AVG;
     v_count = 0;
-    thc.void_lock = arc_voltage > arc_vref + 25.0f || arc_voltage >= 165.0f;
-    if(thc.void_lock || !isfinite(arc_voltage)) {
-        if(job.thc == THC_Down && st2_motor_running(z_motor))
+    // Hold Z on a voltage jump (kerf crossing, hole, plate edge) and on an implausible reading
+    // (ADC/I2C failure or arc not really transferred) so the torch can neither dive nor climb.
+    thc.void_lock = !isfinite(arc_voltage) || arc_voltage < THC_MIN_VALID_VOLTAGE ||
+                     arc_voltage > arc_vref + 25.0f || arc_voltage >= 165.0f;
+    if(thc.void_lock) {
+        if(st2_motor_running(z_motor))
             st2_motor_stop(z_motor);
         pidf_reset(&pid);
         return;
@@ -1222,6 +1300,8 @@ static void reset (void)
     task_delete(thc_start, NULL);
     cutting_spindle = NULL;
     host_managed = waiting_for_cut_height = arc_lost = false;
+    thc_min_offset_mm = THC_MIN_OFFSET_MM;
+    thc_max_offset_mm = THC_MAX_OFFSET_MM;
     thc_port_changed = false;
     arc_grace_ms = 0;
     job.arc_ok_ignore = false;
@@ -1248,9 +1328,13 @@ static void arcSetState (spindle_ptrs_t *spindle, spindle_state_t state, float r
         task_delete(puddle_jumped, NULL);
         task_delete(thc_start, NULL);
         cutting_spindle = NULL;
+        if(host_managed)
+            job.thc_disabled = true; // next M3 without (THC:PREPARE...) must not start the THC on its own
         host_managed = waiting_for_cut_height = arc_lost = false;
         arc_grace_ms = 0;
         job.arc_ok_ignore = false;
+        thc_min_offset_mm = THC_MIN_OFFSET_MM;
+        thc_max_offset_mm = THC_MAX_OFFSET_MM;
         thc.enabled = thc.active = thc.void_lock = Off;
         stateHandler = state_await_idle;
         release_z();
@@ -1373,7 +1457,7 @@ static inline char *signals_tostring (char *buf, thc_signals_t signals)
 
 static void onRealtimeReport (stream_write_ptr stream_write, report_tracking_flags_t report)
 {
-    static char buf[24];
+    static char buf[40];
 
     strcpy(buf, "|THC:");
     strcat(buf, ftoa(arc_voltage, 1));
@@ -1783,6 +1867,12 @@ void plasma_init (void)
 
         on_gcode_comment = grbl.on_gcode_comment;
         grbl.on_gcode_comment = onGcodeComment;
+
+        // (THC:LEADOUT) synchronized with motion, see onProcessGcodeComment().
+        on_process_gcode_comment = grbl.on_process_gcode_comment;
+        grbl.on_process_gcode_comment = onProcessGcodeComment;
+        on_gcode_message = grbl.on_gcode_message;
+        grbl.on_gcode_message = onGcodeMessage;
 
 /*
         control_interrupt_callback = hal.control_interrupt_callback;
