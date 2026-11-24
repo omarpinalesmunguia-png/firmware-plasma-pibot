@@ -1,0 +1,305 @@
+diff --git a/thc.c b/thc.c
+index 9f16ed7..d2975d2 100644
+--- a/thc.c
++++ b/thc.c
+@@ -98,6 +98,32 @@ extern void sheetcam_init (void);
+ #define PLASMA_THC_MAX_CONTROL_ERROR_V  20.0f
+ #endif
+ #define PLASMA_MOTION_STALL_MS           2500u
++// 5H: automatic calibration of the target voltage, (THC:PREPARE,G=..,V=..[,L=..],A=<window V>).
++// After THC start: skip SKIP_MM of travel, wait until the voltage is stable (no trend between
++// the two halves of the last SETTLE_N samples and normal noise, within SETTLE_MAX_MM), then average SAMPLE_MM of
++// travel at cutting speed with Z held. The mean replaces V if |mean - V| <= window.
++#ifndef PLASMA_THC_AUTOCAL_SKIP_MM
++#define PLASMA_THC_AUTOCAL_SKIP_MM       10.0f
++#endif
++#ifndef PLASMA_THC_AUTOCAL_SAMPLE_MM
++#define PLASMA_THC_AUTOCAL_SAMPLE_MM     30.0f
++#endif
++#ifndef PLASMA_THC_AUTOCAL_SETTLE_MAX_MM
++#define PLASMA_THC_AUTOCAL_SETTLE_MAX_MM 40.0f
++#endif
++#ifndef PLASMA_THC_AUTOCAL_SETTLE_DRIFT_V
++#define PLASMA_THC_AUTOCAL_SETTLE_DRIFT_V 2.0f   // |mean newer half - mean older half|
++#endif
++#ifndef PLASMA_THC_AUTOCAL_SETTLE_STD_V
++#define PLASMA_THC_AUTOCAL_SETTLE_STD_V   5.0f   // normal reading noise is ~3 V
++#endif
++#ifndef PLASMA_THC_AUTOCAL_SPIKE_V
++#define PLASMA_THC_AUTOCAL_SPIKE_V       12.0f
++#endif
++#define PLASMA_THC_AUTOCAL_SETTLE_N      12      // ~0.5 s at 25 Hz
++#define PLASMA_THC_AUTOCAL_MIN_SAMPLES   10
++#define PLASMA_THC_AUTOCAL_WINDOW_MIN_V  3.0f
++#define PLASMA_THC_AUTOCAL_WINDOW_MAX_V  30.0f
+ // Digital ports
+ #define PLASMA_THC_DISABLE_PORT         2 // output
+ #define PLASMA_TORCH_DISABLE_PORT       3 // output
+@@ -282,6 +308,24 @@ static float thc_start_z = 0.0f;
+ static float thc_limit_mm = PLASMA_THC_MAX_OFFSET_MM;   // symmetric tracking limit around thc_start_z
+ static bool thc_limit_active = false;                    // true only when the job sent L=
+ static uint32_t material_id = PLASMA_TMP_MATERIAL_ID_START;
++
++// 5H: automatic target voltage calibration (foreground only).
++typedef enum {
++    AutoCal_Off = 0,
++    AutoCal_Skip,
++    AutoCal_Settle,
++    AutoCal_Sample,
++    AutoCal_Done
++} autocal_phase_t;
++
++static struct {
++    autocal_phase_t phase;
++    float window, ref, center;
++    float dist, phase_dist, sum;
++    float buf[PLASMA_THC_AUTOCAL_SETTLE_N];
++    uint_fast8_t n, idx;
++    uint32_t count, last_tick, last_id;
++} autocal = {};
+ static material_t *materials = NULL;
+ static struct {
+     int32_t id;
+@@ -1203,6 +1247,137 @@ static void set_target_voltage (float v)
+     reset_control_filter();
+ }
+ 
++// 5H ------------------------------------------------------------------------
++static void autocal_report (const char *result, float value)
++{
++    char message[96];
++    if(isfinite(value))
++        snprintf(message, sizeof(message), "THC AUTO V=%.1f REF=%.1f W=%.0f %s", value, autocal.ref, autocal.window, result);
++    else
++        snprintf(message, sizeof(message), "THC AUTO SIN DATO REF=%.1f %s", autocal.ref, result);
++    report_message(message, Message_Plain);
++}
++
++static void autocal_abort (const char *reason)
++{
++    if(autocal.phase != AutoCal_Off && autocal.phase != AutoCal_Done)
++        autocal_report(reason, NAN);
++    autocal.phase = AutoCal_Off;
++}
++
++static void autocal_arm (float window, float ref)
++{
++    memset(&autocal, 0, sizeof(autocal));
++    autocal.window = window;
++    autocal.ref = ref;
++    autocal.phase = AutoCal_Skip;
++}
++
++static inline bool autocal_running (void)
++{
++    return autocal.phase == AutoCal_Skip || autocal.phase == AutoCal_Settle || autocal.phase == AutoCal_Sample;
++}
++
++static void autocal_finish_manual (const char *reason, float value)
++{
++    autocal.phase = AutoCal_Done;
++    autocal_report(reason, value);
++    reset_control_filter();     // THC starts with the manual target
++}
++
++// Called from state_thc_pid() only (THC active = at cutting speed); Z is held meanwhile.
++static void autocal_step (void)
++{
++    uint32_t now = hal.get_elapsed_ticks();
++    uint32_t dt = autocal.last_tick ? (uint32_t)(now - autocal.last_tick) : 0;
++    autocal.last_tick = now;
++    if(dt > 100)    // came back from a slow-down/lock: do not count the gap
++        dt = 0;
++    autocal.dist += fr_actual * (float)dt / 60000.0f;
++
++    bool fresh = autocal.last_id != arc_voltage_sample_id;
++    autocal.last_id = arc_voltage_sample_id;
++    float v = arc_voltage;
++    if(!arc_voltage_valid || !isfinite(v) || v < PLASMA_VOLTAGE_MONITOR_MIN_ACTIVE)
++        fresh = false;
++
++    switch(autocal.phase) {
++
++        case AutoCal_Skip:
++            if(autocal.dist >= PLASMA_THC_AUTOCAL_SKIP_MM) {
++                autocal.phase = AutoCal_Settle;
++                autocal.phase_dist = autocal.dist;
++                autocal.n = autocal.idx = 0;
++            }
++            break;
++
++        case AutoCal_Settle:
++            if(fresh && fabsf(v - autocal.ref) <= autocal.window + 15.0f) {
++                autocal.buf[autocal.idx++] = v;
++                if(autocal.idx == PLASMA_THC_AUTOCAL_SETTLE_N)
++                    autocal.idx = 0;
++                if(autocal.n < PLASMA_THC_AUTOCAL_SETTLE_N)
++                    autocal.n++;
++                if(autocal.n == PLASMA_THC_AUTOCAL_SETTLE_N) {
++                    // Ring buffer: idx points to the oldest sample.
++                    const uint_fast8_t half = PLASMA_THC_AUTOCAL_SETTLE_N / 2;
++                    float older = 0.0f, newer = 0.0f;
++                    for(uint_fast8_t i = 0; i < PLASMA_THC_AUTOCAL_SETTLE_N; i++) {
++                        float x = autocal.buf[(autocal.idx + i) % PLASMA_THC_AUTOCAL_SETTLE_N];
++                        if(i < half)
++                            older += x;
++                        else
++                            newer += x;
++                    }
++                    older /= (float)half;
++                    newer /= (float)(PLASMA_THC_AUTOCAL_SETTLE_N - half);
++                    float mean = (older * (float)half + newer * (float)(PLASMA_THC_AUTOCAL_SETTLE_N - half)) / (float)PLASMA_THC_AUTOCAL_SETTLE_N;
++                    float var = 0.0f;
++                    for(uint_fast8_t i = 0; i < PLASMA_THC_AUTOCAL_SETTLE_N; i++)
++                        var += (autocal.buf[i] - mean) * (autocal.buf[i] - mean);
++                    var /= (float)PLASMA_THC_AUTOCAL_SETTLE_N;
++                    if(fabsf(newer - older) <= PLASMA_THC_AUTOCAL_SETTLE_DRIFT_V &&
++                        var <= PLASMA_THC_AUTOCAL_SETTLE_STD_V * PLASMA_THC_AUTOCAL_SETTLE_STD_V) {
++                        autocal.center = mean;
++                        autocal.phase = AutoCal_Sample;
++                        autocal.phase_dist = autocal.dist;
++                        autocal.sum = 0.0f;
++                        autocal.count = 0;
++                        break;
++                    }
++                }
++            }
++            if(autocal.dist - autocal.phase_dist > PLASMA_THC_AUTOCAL_SETTLE_MAX_MM)
++                autocal_finish_manual("MANUAL (no se estabilizo)", NAN);
++            break;
++
++        case AutoCal_Sample:
++            if(fresh && fabsf(v - autocal.center) <= PLASMA_THC_AUTOCAL_SPIKE_V) {
++                autocal.sum += v;
++                autocal.count++;
++            }
++            if(autocal.dist - autocal.phase_dist >= PLASMA_THC_AUTOCAL_SAMPLE_MM) {
++                if(autocal.count < PLASMA_THC_AUTOCAL_MIN_SAMPLES) {
++                    autocal_finish_manual("MANUAL (pocas muestras)", NAN);
++                    break;
++                }
++                float mean = autocal.sum / (float)autocal.count;
++                if(fabsf(mean - autocal.ref) <= autocal.window) {
++                    autocal.phase = AutoCal_Done;
++                    job.param.cut_voltage = mean;
++                    set_target_voltage(mean);
++                    autocal_report("OK", mean);
++                } else
++                    autocal_finish_manual("FUERA (se usa manual)", mean);
++            }
++            break;
++
++        default:
++            break;
++    }
++}
++// ---------------------------------------------------------------------------
++
+ static void pause_on_error (void)
+ {
+     if(cutting_spindle) {
+@@ -1223,6 +1398,7 @@ static void thc_leadout (void)
+     if(!host_managed || !cutting_spindle)
+         return;
+ 
++    autocal_abort("MANUAL (figura corta)");
+     task_delete(thc_start, NULL);
+     waiting_for_cut_height = false;
+     job.thc_disabled = true;
+@@ -1234,14 +1410,14 @@ static void thc_leadout (void)
+ static status_code_t thc_host_command (char *command)
+ {
+     if(!strcmp(command, "INFO")) {
+-        report_message("THC control 3", Message_Plain); // 2: PREPARE sin V=, LEADOUT sincronizado (5F); 3: respuesta proporcional, bloqueo asimetrico, L hasta 12 mm (5G)
++        report_message("THC control 4", Message_Plain); // 2: PREPARE sin V=, LEADOUT sincronizado (5F); 3: respuesta proporcional, bloqueo asimetrico, L hasta 12 mm (5G); 4: calibracion automatica A= (5H)
+         return Status_OK;
+     }
+ 
+     if(!strncmp(command, "PREPARE,", 8)) {
+         uint_fast8_t pos = 8;
+-        float grace, voltage = 0.0f, limit = 0.0f;
+-        bool has_limit = false;
++        float grace, voltage = 0.0f, limit = 0.0f, auto_window = 0.0f;
++        bool has_limit = false, has_auto = false;
+         if(cutting_spindle || strncmp(command + pos, "G=", 2))
+             return Status_GcodeUnsupportedCommand;
+         pos += 2;
+@@ -1253,14 +1429,22 @@ static status_code_t thc_host_command (char *command)
+             pos += 3;
+             if(!read_float(command, &pos, &voltage) || voltage < 40.0f || voltage > 250.0f)
+                 return Status_GcodeValueOutOfRange;
+-            if(command[pos]) {
+-                if(strncmp(command + pos, ",L=", 3))
+-                    return Status_GcodeValueOutOfRange;
+-                pos += 3;
+-                if(!read_float(command, &pos, &limit) || command[pos] ||
+-                    limit < PLASMA_THC_LIMIT_MIN_MM || limit > min(PLASMA_THC_LIMIT_MAX_MM, PLASMA_THC_MAX_OFFSET_MM))
++            // Optional ,L=<mm> and ,A=<window V> (5H), each at most once, in any order.
++            while(command[pos]) {
++                if(!has_limit && !strncmp(command + pos, ",L=", 3)) {
++                    pos += 3;
++                    if(!read_float(command, &pos, &limit) ||
++                        limit < PLASMA_THC_LIMIT_MIN_MM || limit > min(PLASMA_THC_LIMIT_MAX_MM, PLASMA_THC_MAX_OFFSET_MM))
++                        return Status_GcodeValueOutOfRange;
++                    has_limit = true;
++                } else if(!has_auto && !strncmp(command + pos, ",A=", 3)) {
++                    pos += 3;
++                    if(!read_float(command, &pos, &auto_window) ||
++                        auto_window < PLASMA_THC_AUTOCAL_WINDOW_MIN_V || auto_window > PLASMA_THC_AUTOCAL_WINDOW_MAX_V)
++                        return Status_GcodeValueOutOfRange;
++                    has_auto = true;
++                } else
+                     return Status_GcodeValueOutOfRange;
+-                has_limit = true;
+             }
+         }
+         if(voltage != 0.0f && (!plasma.option.sync_pos || mode != Plasma_ModeVoltage))
+@@ -1274,6 +1458,8 @@ static status_code_t thc_host_command (char *command)
+         // 5F: (THC:PREPARE,G=<ms>) without V= -> cut managed by the host WITHOUT THC
+         // (fixed height, 3D height map, small contours): Z is never claimed, so the
+         // programmed Z moves of a height map are executed, and arc ok gets its grace time.
++        autocal_abort("MANUAL (figura sin terminar)");
++
+         if(voltage == 0.0f) {
+             thc_limit_reset();
+             host_managed = true;
+@@ -1301,6 +1487,8 @@ static status_code_t thc_host_command (char *command)
+         job.arc_ok_ignore = false;
+         job.param.cut_voltage = voltage;
+         set_target_voltage(voltage);
++        if(has_auto)
++            autocal_arm(auto_window, voltage);
+         return Status_OK;
+     }
+ 
+@@ -1324,6 +1512,7 @@ static status_code_t thc_host_command (char *command)
+     }
+ 
+     if(!strcmp(command, "OFF")) {
++        autocal_abort("MANUAL (THC apagado)");
+         task_delete(thc_start, NULL);
+         waiting_for_cut_height = false;
+         job.thc_disabled = true;
+@@ -1527,6 +1716,14 @@ static void state_thc_pid (void)
+         return;
+     }
+ 
++    // 5H: while calibrating, Z stays at the programmed cut height.
++    if(autocal_running()) {
++        if(st2_motor_running(z_motor))
++            st2_motor_stop(z_motor);
++        autocal_step();
++        return;
++    }
++
+     float filtered;
+     if(!get_filtered_control_voltage(&filtered)) {
+         if((!arc_voltage_valid || thc.void_lock) && st2_motor_running(z_motor))
+@@ -1725,6 +1922,7 @@ static void reset (void)
+     floating_head_collision = false;
+     floating_head_samples = 0;
+     thc_limit_reset();
++    autocal.phase = AutoCal_Off;
+     motion_stall_reported = false;
+     motion_last_progress = hal.get_elapsed_ticks();
+     arc_grace_ms = 0;
