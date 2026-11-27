@@ -1631,6 +1631,11 @@ static void stepperClaimMotor (uint_fast8_t axis_id, bool claim)
     }
 }
 
+// ESP32-U: el THC inyecta pasos de Z desde una ISR; en el ESP32 clasico esta funcion debe
+// estar en IRAM para no fallar si la cache de flash esta apagada (escritura en LittleFS/NVS).
+#if defined(ESP32U_PLASMA_BUILD) && ESP32U_PLASMA_BUILD
+IRAM_ATTR
+#endif
 void stepperOutputStep (axes_signals_t step_out, axes_signals_t dir_out)
 {
     if(step_out.bits) {

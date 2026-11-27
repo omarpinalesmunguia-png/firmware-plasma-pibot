@@ -1,0 +1,115 @@
+name: Build ESP32-WROOM-32U Plasma sobre 5H (mismo THC que la PiBot)
+
+on:
+  push:
+    branches:
+      - esp32u-plasma-5h
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener firmware y componentes fijados
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Aplicar correccion de reconexion WiFi
+        run: git -C main/networking apply ../../patches/pibot-network-reconnect.patch
+
+      - name: Mantener trabajos de la TF aunque se pierda Telnet
+        run: git -C main/sdcard apply ../../patches/pibot-sd-autonomous-telnet.patch
+
+      - name: Registrar reinicios durante trabajos de la TF
+        run: git -C main/sdcard apply ../../patches/pibot-sd-reset-diagnostics.patch
+
+      - name: Aplicar THC protegido y telemetria robusta
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4-thc-protegido.patch
+
+      - name: Aplicar seguimiento ampliado y proteccion de colision
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa4c-seguimiento-10mm.patch
+
+      - name: Apagar antorcha y registrar bloque si el movimiento se inmoviliza
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5c-motion-stall.patch
+
+      - name: Sacar la coma flotante de la ISR del stepper (corrige PANIC Coprocessor exception)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5d-isr-sin-fpu.patch
+
+      - name: Agregar limite acotado opcional L= al THC (sin L= no cambia nada)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5e-thc-limite-acotado.patch
+
+      - name: LEADOUT sincronizado con el movimiento, PREPARE sin V= y THC control 2 (5F)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5f-leadout-sincronizado.patch
+
+      - name: THC con respuesta proporcional, bloqueo asimetrico y L hasta 12 mm (5G)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5g-thc-respuesta-inclinada.patch
+
+      - name: Calibracion automatica del voltaje objetivo A= y THC control 4 (5H)
+        run: git -C main/plasma apply ../../patches/pibot-plasma-etapa5h-thc-calibracion-automatica.patch
+
+      - name: Hacer explicitos los fallos de lectura del MCP3221
+        run: git -C main/plugins apply ../../patches/pibot-mcp3221-etapa3-1-fallo-explicito.patch
+
+      - name: Compilar para ESP32 clasico (WROOM-32U, 4 MB, G-code en flash interna)
+        uses: docker://espressif/idf:release-v4.4
+        env:
+          SDKCONFIG_DEFAULTS: "sdkconfig.defaults.esp32;sdkconfig.defaults.esp32u_plasma"
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            sh -c "idf.py -DESP32U_PLASMA=ON set-target esp32 &&
+            idf.py -DESP32U_PLASMA=ON build &&
+            cd build &&
+            esptool.py --chip esp32 merge_bin
+            -o grbl_esp32u_plasma_5h_merged_0x0.bin @flash_args"
+
+      - name: Verificar que ninguna ISR usa FPU (falla la compilacion si la usa)
+        uses: docker://espressif/idf:release-v4.4
+        with:
+          entrypoint: /opt/esp/entrypoint.sh
+          args: >-
+            python3 scripts/check_isr_fpu.py build/grbl.elf
+            --report build/isr_fpu_report.txt
+
+      - name: Publicar firmware (solo si paso la verificacion FPU)
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32u_plasma_5h
+          path: |
+            build/grbl_esp32u_plasma_5h_merged_0x0.bin
+            build/grbl.bin
+          if-no-files-found: error
+
+      - name: Registrar huella del ELF para casarla con un posible PANIC
+        if: always()
+        run: |
+          if [ -f build/grbl.elf ]; then
+            H=$(sha256sum build/grbl.elf | cut -d' ' -f1)
+            echo "ELF SHA256 completo: $H"
+            echo "ELF file SHA256 (formato del PANIC, 16 hex): ${H:0:16}"
+            {
+              echo "### Huella del ELF"
+              echo "Compararla con la linea \`ELF file SHA256\` de un PANIC: \`${H:0:16}\`"
+              echo "### Auditoria FPU en ISR"
+              echo '```'
+              cat build/isr_fpu_report.txt 2>/dev/null || echo "(sin informe)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar simbolos de depuracion (ELF, MAP e informe FPU)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32u_plasma_5h_simbolos_elf_map
+          path: |
+            build/grbl.elf
+            build/grbl.map
+            build/isr_fpu_report.txt
+            build/project_description.json
+            build/flash_args
+            sdkconfig
+          if-no-files-found: warn
+          retention-days: 90

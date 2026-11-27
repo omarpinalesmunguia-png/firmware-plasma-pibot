@@ -8,6 +8,9 @@ OPTION(BOARD_BLACKBOX_X32 "Compile for BlackBox X32" OFF)
  # Do not enable unless having a board that supports it!
 OPTION(Ethernet "Compile with Ethernet support" OFF)
 
+# ESP32-WROOM-32U plasma build (target esp32, 4 MB, sin TF). Ver BUILD_ESP32U_PLASMA.md.
+OPTION(ESP32U_PLASMA "ESP32-WROOM-32U plasma build" OFF)
+
 # Add my_plugin.c to compilation, add my_plugin.c to the main folder first
 OPTION(AddMyPlugin "Add my_plugin.c" OFF)
 
@@ -308,7 +311,17 @@ target_add_binary_data("${COMPONENT_LIB}" "embedded/favicon.ico" BINARY)
 target_add_binary_data("${COMPONENT_LIB}" "embedded/ap_login.html" BINARY)
 target_add_binary_data("${COMPONENT_LIB}" "embedded/index.html.gz" BINARY)
 
+# ESP32-WROOM-32U plasma build: selecciona la placa en my_machine.h.
+if(ESP32U_PLASMA)
+idf_build_get_property(esp32u_idf_target IDF_TARGET)
+if(NOT "${esp32u_idf_target}" STREQUAL "esp32")
+message(FATAL_ERROR "ESP32U_PLASMA requiere el objetivo esp32 (idf.py set-target esp32)")
+endif()
+target_compile_definitions("${COMPONENT_LIB}" PUBLIC ESP32U_PLASMA_BUILD=1)
+endif()
+
 unset(BOARD_BLACKBOX_X32 CACHE)
+unset(ESP32U_PLASMA CACHE)
 unset(Ethernet CACHE)
 unset(AddMyPlugin CACHE)
 

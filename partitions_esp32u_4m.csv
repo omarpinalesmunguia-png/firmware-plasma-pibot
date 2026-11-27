@@ -1,0 +1,8 @@
+# ESP32-WROOM-32U plasma build (4 MB flash, no SD card)
+# App 2 MB, LittleFS "storage" ~1.93 MB mounted as root for G-code uploaded by FTP.
+# Name,   Type, SubType, Offset,   Size, Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  2M,
+grbl,     data, 0x99,    0x210000, 0x1000,
+storage,  data, spiffs,  0x211000, 0x1EF000,

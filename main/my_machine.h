@@ -30,7 +30,15 @@
 #define PIBOT_VOLTAGE_MONITOR_ONLY      1
 #define PIBOT_PROTECTED_THC_ENABLE      1
 
-#define BOARD_MY_MACHINE
+// Dos maquinas comparten este firmware y el programa PlasmaPibotLimpio:
+//  - PiBot V5.88 Ultra (ESP32-S3, tarjeta TF)              -> compilacion por omision.
+//  - ESP32-WROOM-32U (4 MB, G-code en la flash interna)    -> -DESP32U_PLASMA=ON, objetivo esp32
+//    (ver BUILD_ESP32U_PLASMA.md). CMakeLists.txt define ESP32U_PLASMA_BUILD.
+#if defined(ESP32U_PLASMA_BUILD) && ESP32U_PLASMA_BUILD
+#define BOARD_ESP32U_PLASMA                // boards/esp32u_plasma_map.h
+#else
+#define BOARD_MY_MACHINE                   // boards/my_machine_map.h (PiBot)
+#endif
 #define SPINDLE0_ENABLE         SPINDLE_ONOFF0
 #define SPINDLE1_ENABLE         0
 #define SPINDLE2_ENABLE         0
@@ -43,12 +51,26 @@
 #define WIFI_ENABLE             1
 #define WIFI_SOFTAP             1
 #define TELNET_ENABLE           1
+#if defined(ESP32U_PLASMA_BUILD) && ESP32U_PLASMA_BUILD
+#define NETWORK_AP_SSID         "ESP32U_Plasma"
+#define NETWORK_AP_PASSWORD     "plasma1234"
+#define NETWORK_AP_HOSTNAME     "esp32u-plasma"
+#define NETWORK_STA_HOSTNAME    "esp32u-plasma"
+// Sin TF: LittleFS en la flash interna montado como raiz ("/"). El FTP y
+// $F=/pibot_trabajo.nc funcionan igual que en la PiBot. Particion: partitions_esp32u_4m.csv.
+#define SDCARD_ENABLE           0
+#ifdef LITTLEFS_ENABLE
+#undef LITTLEFS_ENABLE                    // CMakeLists.txt define LITTLEFS_ENABLE=1
+#endif
+#define LITTLEFS_ENABLE         2
+#else
 #define NETWORK_AP_SSID         "PiBot_Plasma"
 #define NETWORK_AP_PASSWORD     "plasma1234"
 #define NETWORK_AP_HOSTNAME     "pibot-plasma"
 #define NETWORK_STA_HOSTNAME    "pibot-plasma"
 
 #define SDCARD_ENABLE           2 // TF activa; incluye carga de archivos para ejecucion autonoma
+#endif
 #define WEBUI_ENABLE            0
 #define FTP_ENABLE              1
 #define ETHERNET_ENABLE         0
@@ -59,7 +81,11 @@
 #define PLASMA_ENABLE           1
 #define PLASMA_FIXED_HEIGHT_ONLY PIBOT_PLASMA_FIXED_HEIGHT_ONLY
 #define PLASMA_DEFAULT_MODE      1 // THC analogico protegido
-#define PLASMA_DEFAULT_ARC_OK_PORT 7
+#if defined(ESP32U_PLASMA_BUILD) && ESP32U_PLASMA_BUILD
+#define PLASMA_DEFAULT_ARC_OK_PORT 5       // ESP32-U: AUXINPUT5 = GPIO13
+#else
+#define PLASMA_DEFAULT_ARC_OK_PORT 7       // PiBot: AUXINPUT7 = GPIO39
+#endif
 #define PLASMA_DEFAULT_ARC_RETRIES 1
 #define PLASMA_VOLTAGE_MONITOR_ONLY PIBOT_VOLTAGE_MONITOR_ONLY
 #define PLASMA_DEFAULT_ARC_VOLTAGE_PORT 0
